@@ -36,15 +36,22 @@ jobs:
               print(e.read().decode(errors="replace")[:500])
               raise SystemExit(0)
 
-          print("top-level keys:", list(payload.keys()))
-          print("echoed parameters:", json.dumps(payload.get("parameters"), indent=2))
-          data = payload.get("data") or []
-          print(f"results: {len(data)}")
-          if data:
-              rec = data[0]
-              print("\nfield names on a job record:")
+          data = payload.get("data")
+          print("type(data):", type(data).__name__)
+          if isinstance(data, dict):
+              print("data keys:", list(data.keys()))
+              for k, v in data.items():
+                  print(f"  data[{k!r}] is {type(v).__name__}"
+                        + (f", len {len(v)}" if hasattr(v, "__len__") else ""))
+              jobs = next((v for v in data.values() if isinstance(v, list)), [])
+          else:
+              jobs = data or []
+          print(f"\njob records found: {len(jobs)}")
+          if jobs:
+              rec = jobs[0]
+              print("field names on a job record:")
               for k in sorted(rec):
                   v = rec[k]
-                  prev = json.dumps(v)[:80] if not isinstance(v, str) else repr(v[:80])
-                  print(f"  {k:34} {prev}")
+                  prev = repr(v[:90]) if isinstance(v, str) else json.dumps(v)[:90]
+                  print(f"  {k:32} {prev}")
           PY
