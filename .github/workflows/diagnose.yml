@@ -1,0 +1,53 @@
+name: Diagnose API
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe the RapidAPI endpoint
+        env:
+          RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request, urllib.error
+
+          key = os.environ["RAPIDAPI_KEY"].strip()
+          print(f"Key length: {len(key)} chars, starts {key[:4]}..., ends ...{key[-4:]}")
+          print(f"Whitespace in key: {any(c.isspace() for c in key)}")
+          print()
+
+          candidates = [
+              ("jsearch.p.rapidapi.com", "/search?query=product%20manager%20in%20New%20York&page=1&num_pages=1"),
+              ("jsearch.p.rapidapi.com", "/v1/search?query=test"),
+              ("jsearch.p.rapidapi.com", "/job-details?job_id=test"),
+              ("jsearch.p.rapidapi.com", "/"),
+          ]
+
+          for host, path in candidates:
+              url = f"https://{host}{path}"
+              req = urllib.request.Request(url, headers={
+                  "X-RapidAPI-Key": key, "X-RapidAPI-Host": host})
+              print(f"=== {host}{path.split('?')[0]}")
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      body = r.read().decode(errors="replace")
+                      print(f"  STATUS {r.status}")
+                      for h in ("server", "x-ratelimit-requests-limit",
+                                "x-ratelimit-requests-remaining", "x-rapidapi-region"):
+                          if r.headers.get(h):
+                              print(f"  {h}: {r.headers[h]}")
+                      print(f"  body: {body[:300]}")
+              except urllib.error.HTTPError as e:
+                  print(f"  STATUS {e.code}")
+                  for h in ("server", "x-ratelimit-requests-limit",
+                            "x-ratelimit-requests-remaining", "x-rapidapi-region"):
+                      if e.headers.get(h):
+                          print(f"  {h}: {e.headers[h]}")
+                  print(f"  body: {e.read().decode(errors='replace')[:300]}")
+              except Exception as e:
+                  print(f"  ERROR {e!r}")
+              print()
+          PY
