@@ -7,29 +7,39 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Find which filter drops the results
+      - name: Measure fresh-job yield per filter combination
         env:
           RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
         run: |
           python3 - <<'PY'
           import json, os, urllib.parse, urllib.request, urllib.error
+          from datetime import datetime, timezone
 
           key = os.environ["RAPIDAPI_KEY"].strip()
           host = "jsearch.p.rapidapi.com"
-          base = {"query": "product manager in New York, NY",
-                  "country": "us", "language": "en"}
+          now = datetime.now(timezone.utc)
+
+          def fresh_days(job):
+              s = job.get("job_posted_at_datetime_utc")
+              if not s:
+                  return None
+              try:
+                  return (now - datetime.fromisoformat(s.replace("Z", "+00:00"))).days
+              except ValueError:
+                  return None
 
           variants = [
-              ("baseline, no filters", {}),
-              ("date_posted=3days", {"date_posted": "3days"}),
-              ("date_posted=week", {"date_posted": "week"}),
-              ("employment_types only", {"employment_types": "FULLTIME,CONTRACTOR"}),
-              ("remote_jobs_only", {"query": "product manager in United States",
-                                    "work_from_home": "true"}),
+              ("query only",                    {}),
+              ("+ date_posted=3days",           {"date_posted": "3days"}),
+              ("+ employment_types",            {"employment_types": "FULLTIME,CONTRACTOR"}),
+              ("+ BOTH",                        {"date_posted": "3days",
+                                                 "employment_types": "FULLTIME,CONTRACTOR"}),
           ]
 
-          for name, extra in variants:
-              p = dict(base); p.update(extra)
+          for label, extra in variants:
+              p = {"query": "product manager in New York, NY",
+                   "country": "us", "language": "en"}
+              p.update(extra)
               url = f"https://{host}/search-v2?" + urllib.parse.urlencode(p)
               req = urllib.request.Request(url, headers={
                   "X-RapidAPI-Key": key, "X-RapidAPI-Host": host})
@@ -38,17 +48,12 @@ jobs:
                       pl = json.loads(r.read().decode())
                       left = r.headers.get("x-ratelimit-requests-remaining")
               except urllib.error.HTTPError as e:
-                  print(f"{name:26} HTTP {e.code}: "
-                        f"{e.read().decode(errors='replace')[:160]}")
+                  print(f"{label:24} HTTP {e.code}")
                   continue
               jobs = (pl.get("data") or {}).get("jobs") or []
-              print(f"{name:26} {len(jobs):3} jobs   (left={left})")
-              print(f"{'':26} echoed: {json.dumps(pl.get('parameters'))[:200]}")
-              if jobs and name == "baseline, no filters":
-                  print("\n  --- field names on a job record ---")
-                  for k in sorted(jobs[0]):
-                      v = jobs[0][k]
-                      prev = repr(v[:80]) if isinstance(v, str) else json.dumps(v)[:80]
-                      print(f"    {k:32} {prev}")
-                  print()
+              ages = [fresh_days(j) for j in jobs]
+              within3 = sum(1 for a in ages if a is not None and a <= 3)
+              shown = ", ".join("?" if a is None else f"{a}d" for a in ages[:10])
+              print(f"{label:24} {len(jobs):2} jobs | {within3} within 3 days "
+                    f"| ages: {shown} | left={left}")
           PY
