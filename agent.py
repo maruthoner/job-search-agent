@@ -95,6 +95,7 @@ TITLE_RE = re.compile("|".join(TITLE_PATTERNS), re.I)
 # Manager, Technical Project Manager and TPM.
 TITLE_EXCLUDE_RE = re.compile(
     r"\b(technical|technically|"
+    r"engineer|engineering|developer|architect|scientist|designer|"
     r"construction|constructions|builder|contracting|"
     r"clinical|clinician|preclinical|"
     r"intern|internship|apprentice|assistant to|coordinator|"

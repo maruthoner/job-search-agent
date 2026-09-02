@@ -62,6 +62,23 @@ def render_dashboard(store, state, out_path):
         item["found_rel"] = relative(job.get("first_seen"))
         jobs.append(item)
 
+    # The same posting often comes back from both the New York and the remote
+    # search under different ids. Show it once, marked as both.
+    merged = {}
+    for item in jobs:
+        key = (item["company"].strip().lower(), item["title"].strip().lower())
+        prior = merged.get(key)
+        if prior is None:
+            merged[key] = item
+            continue
+        if item["bucket"] != prior["bucket"]:
+            prior["both_locations"] = True
+        # keep whichever copy actually carries a salary
+        if item["meets_floor"] and not prior["meets_floor"]:
+            item["both_locations"] = prior.get("both_locations", False)
+            merged[key] = item
+    jobs = list(merged.values())
+
     jobs.sort(key=lambda j: (not j["is_new"], -(j["sort_salary"] or 0),
                              j.get("first_seen") or ""), reverse=False)
 
@@ -369,7 +386,8 @@ function card(j) {{
     `<span class="badge sal${{j.meets_floor ? '' : ' unlisted'}}">${{esc(j.salary_text)}}</span>`,
     j.is_new ? '<span class="badge newb">New</span>' : '',
     `<span class="badge">${{esc(j.location)}}</span>`,
-    j.is_remote ? '<span class="badge">Remote</span>' : '',
+    j.both_locations ? '<span class="badge">New York + Remote</span>'
+      : (j.is_remote ? '<span class="badge">Remote</span>' : ''),
     j.date_unknown ? '<span class="badge">Posted date unknown</span>' : '',
     j.employment_type ? `<span class="badge">${{esc(j.employment_type)}}</span>` : '',
   ].filter(Boolean).join('');
