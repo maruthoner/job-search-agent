@@ -329,6 +329,8 @@ def run(api_key, themes, state, store):
     raw_count = 0
     kept = 0
     added = 0
+    ok_searches = 0
+    failed_searches = 0
     seen_now = now_utc().isoformat(timespec="seconds")
 
     for theme in themes:
@@ -338,7 +340,9 @@ def run(api_key, themes, state, store):
         ):
             results = api_search(api_key, query, extra, state)
             if results is None:
+                failed_searches += 1
                 continue
+            ok_searches += 1
             raw_count += len(results)
             for raw in results:
                 job = normalize(raw, bucket, theme)
@@ -360,7 +364,9 @@ def run(api_key, themes, state, store):
                     store[job["id"]] = job
                     added += 1
 
-    log(f"Scanned {raw_count} raw results, {kept} passed the filters, {added} brand new.")
+    log(f"{ok_searches} searches succeeded, {failed_searches} failed. "
+        f"Scanned {raw_count} raw results, {kept} passed the filters, "
+        f"{added} brand new.")
 
     cutoff = now_utc() - timedelta(days=RETAIN_DAYS)
     stale = [jid for jid, j in store.items()
@@ -377,6 +383,11 @@ def run(api_key, themes, state, store):
     })
     state["runs"] = state["runs"][-60:]
     state["last_run_date"] = f"{datetime.now(ET):%Y-%m-%d}"
+
+    if ok_searches == 0:
+        raise RuntimeError(
+            f"Every one of the {failed_searches} searches failed - the dashboard "
+            f"was not refreshed. See the errors above.")
 
 
 def main():
@@ -406,7 +417,12 @@ def main():
             return 1
 
         themes = THEMES if args.all else themes_for_today()
-        run(api_key, themes, state, store)
+        try:
+            run(api_key, themes, state, store)
+        except RuntimeError as exc:
+            save_json(STATE_FILE, state)     # keep whatever quota info we learned
+            log(f"ERROR: {exc}")
+            return 1
         save_json(JOBS_FILE, store)
         save_json(STATE_FILE, state)
 
