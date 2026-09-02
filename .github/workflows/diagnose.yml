@@ -7,48 +7,44 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Probe the RapidAPI endpoint
+      - name: Probe the search-v2 endpoint
         env:
           RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
         run: |
           python3 - <<'PY'
-          import json, os, urllib.request, urllib.error
+          import json, os, urllib.parse, urllib.request, urllib.error
 
           key = os.environ["RAPIDAPI_KEY"].strip()
-          print(f"Key length: {len(key)} chars, starts {key[:4]}..., ends ...{key[-4:]}")
-          print(f"Whitespace in key: {any(c.isspace() for c in key)}")
-          print()
-
           host = "jsearch.p.rapidapi.com"
-          q = "?query=product%20manager%20in%20New%20York%2C%20NY&page=1&num_pages=1"
-          candidates = [(host, p + q) for p in (
-              "/search-jobs", "/jobs-search", "/job-search", "/search_jobs",
-              "/searchjobs", "/jobs", "/v2/search", "/api/search",
-              "/search-filters", "/estimated-salary", "/company-job-salary",
-          )]
+          params = {
+              "query": "product manager in New York, NY",
+              "country": "us",
+              "language": "en",
+              "date_posted": "3days",
+              "employment_types": "FULLTIME,CONTRACTOR",
+          }
+          url = f"https://{host}/search-v2?" + urllib.parse.urlencode(params)
+          req = urllib.request.Request(url, headers={
+              "X-RapidAPI-Key": key, "X-RapidAPI-Host": host})
+          try:
+              with urllib.request.urlopen(req, timeout=45) as r:
+                  payload = json.loads(r.read().decode())
+                  print(f"STATUS {r.status}  "
+                        f"remaining={r.headers.get('x-ratelimit-requests-remaining')}")
+          except urllib.error.HTTPError as e:
+              print(f"STATUS {e.code}")
+              print(e.read().decode(errors="replace")[:500])
+              raise SystemExit(0)
 
-          for host, path in candidates:
-              url = f"https://{host}{path}"
-              req = urllib.request.Request(url, headers={
-                  "X-RapidAPI-Key": key, "X-RapidAPI-Host": host})
-              print(f"=== {host}{path.split('?')[0]}")
-              try:
-                  with urllib.request.urlopen(req, timeout=30) as r:
-                      body = r.read().decode(errors="replace")
-                      print(f"  STATUS {r.status}")
-                      for h in ("server", "x-ratelimit-requests-limit",
-                                "x-ratelimit-requests-remaining", "x-rapidapi-region"):
-                          if r.headers.get(h):
-                              print(f"  {h}: {r.headers[h]}")
-                      print(f"  body: {body[:300]}")
-              except urllib.error.HTTPError as e:
-                  print(f"  STATUS {e.code}")
-                  for h in ("server", "x-ratelimit-requests-limit",
-                            "x-ratelimit-requests-remaining", "x-rapidapi-region"):
-                      if e.headers.get(h):
-                          print(f"  {h}: {e.headers[h]}")
-                  print(f"  body: {e.read().decode(errors='replace')[:300]}")
-              except Exception as e:
-                  print(f"  ERROR {e!r}")
-              print()
+          print("top-level keys:", list(payload.keys()))
+          print("echoed parameters:", json.dumps(payload.get("parameters"), indent=2))
+          data = payload.get("data") or []
+          print(f"results: {len(data)}")
+          if data:
+              rec = data[0]
+              print("\nfield names on a job record:")
+              for k in sorted(rec):
+                  v = rec[k]
+                  prev = json.dumps(v)[:80] if not isinstance(v, str) else repr(v[:80])
+                  print(f"  {k:34} {prev}")
           PY
