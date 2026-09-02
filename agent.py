@@ -2,14 +2,14 @@
 """
 Job search agent - JSearch (RapidAPI) -> filtered job list -> HTML dashboard.
 
-Runs three times a day. Each run spends exactly 2 API requests (one for the
-New York search, one for the US-remote search) for a single rotating title
-group, which keeps us inside the ~200 request/month free tier.
+Runs once a day at 9:15am New York time. Each run spends 6 API requests
+(3 title themes x 2 locations), which is 180/month on a 31-day month and stays
+inside the ~200 request/month free tier.
 
 Usage:
-    python3 agent.py            # normal scheduled run (exits quietly if not a run window)
-    python3 agent.py --force    # run right now, pick the nearest slot
-    python3 agent.py --slot 1   # run a specific slot
+    python3 agent.py            # normal scheduled run (exits quietly outside the window)
+    python3 agent.py --force    # run right now regardless of the clock
+    python3 agent.py --all      # search all five themes (10 requests) - use sparingly
     python3 agent.py --render   # rebuild the HTML from saved data, no API calls
 """
 
@@ -22,7 +22,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -38,38 +38,56 @@ API_HOST = "jsearch.p.rapidapi.com"
 # ---------------------------------------------------------------- settings
 
 SALARY_FLOOR = 215_000
-DATE_POSTED = "3days"          # how far back to look
+DATE_POSTED = "3days"          # how far back each search looks
 EMPLOYMENT_TYPES = "FULLTIME,CONTRACTOR"
 RETAIN_DAYS = 30               # how long a job stays on the dashboard
-NEW_FOR_HOURS = 24             # how long a job wears the NEW badge
-MONTHLY_REQUEST_CAP = 190      # hard stop so we never exceed the 200/mo plan
+NEW_FOR_HOURS = 36             # how long a job wears the NEW badge
+MONTHLY_REQUEST_CAP = 195      # hard stop so we never exceed the 200/mo plan
 
-# Three run windows in New York time. Each owns one title group.
-# A window is open for 75 minutes so a late GitHub Actions start still counts.
-SLOTS = [
-    {"at": (9, 30),  "label": "9:30am", "query": "product manager"},
-    {"at": (13, 0),  "label": "1:00pm", "query": "program manager"},
-    {"at": (17, 30), "label": "5:30pm", "query": "transformation lead"},
+RUN_AT = (9, 15)               # 9:15am New York time
+WINDOW_MINUTES = 75            # a late GitHub Actions start still counts
+
+# The five title themes. Three are searched each day, rotating, so every theme
+# is searched at least every other day - comfortably inside the 3-day lookback,
+# so no posting can slip through between its turns.
+THEMES = [
+    "product manager",
+    "program manager",
+    "project manager",
+    "transformation lead",
+    "chief of staff",
 ]
-WINDOW_MINUTES = 75
+THEMES_PER_RUN = 3
 
 # A job is kept only if its title looks like one of these.
 TITLE_PATTERNS = [
-    r"\bprogram\s+manager\b", r"\bprogramme\s+manager\b", r"\bprogram\s+lead\b",
-    r"\bprogram\s+director\b", r"\btechnical\s+program\s+manager\b", r"\btpm\b",
+    # program
+    r"\bprogram(me)?\s+manager\b", r"\bprogram(me)?\s+lead\b",
+    r"\bprogram(me)?\s+director\b", r"\bprogram(me)?\s+management\b",
+    r"\btechnical\s+program\s+manager\b", r"\btpm\b",
+    # project
+    r"\bproject\s+manager\b", r"\bproject\s+management\b", r"\bproject\s+lead\b",
+    r"\bproject\s+director\b", r"\bdirector\s+of\s+projects?\b",
+    r"\btechnical\s+project\s+manager\b",
+    # product
     r"\bproduct\s+manager\b", r"\bproduct\s+management\b", r"\bproduct\s+lead\b",
-    r"\bproduct\s+owner\b", r"\bdirector\s+of\s+product\b", r"\bhead\s+of\s+product\b",
-    r"\bgroup\s+product\b", r"\bproduct\s+director\b",
+    r"\bproduct\s+owner\b", r"\bdirector\s+of\s+product\b",
+    r"\bhead\s+of\s+product\b", r"\bgroup\s+product\b", r"\bproduct\s+director\b",
+    # transformation / change
     r"\btransformation\b", r"\bchange\s+management\b", r"\bchange\s+lead\b",
+    r"\bbusiness\s+change\b",
+    # portfolio / PMO / chief of staff
     r"\bpmo\b", r"\bportfolio\s+manager\b", r"\bportfolio\s+lead\b",
     r"\bportfolio\s+director\b", r"\bchief\s+of\s+staff\b",
+    r"\bdelivery\s+manager\b", r"\bdelivery\s+lead\b",
 ]
 TITLE_RE = re.compile("|".join(TITLE_PATTERNS), re.I)
 
 # Junk that sometimes matches the patterns above.
 TITLE_EXCLUDE_RE = re.compile(
     r"\b(intern|internship|apprentice|assistant to|coordinator|"
-    r"junior|entry[- ]level|associate product manager|graduate)\b", re.I)
+    r"junior|entry[- ]level|associate product manager|graduate|"
+    r"trainee|analyst i\b)\b", re.I)
 
 # For jobs with no posted salary: only keep them if the title reads senior.
 SENIOR_RE = re.compile(
@@ -112,30 +130,28 @@ def now_utc():
     return datetime.now(timezone.utc)
 
 
-def pick_slot(force=False):
-    """Return the slot index whose window contains 'now', else None."""
+def in_window():
+    """True if the New York clock is inside today's run window."""
     now = datetime.now(ET)
-    for idx, slot in enumerate(SLOTS):
-        hh, mm = slot["at"]
-        start = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
-        if start <= now < start + timedelta(minutes=WINDOW_MINUTES):
-            return idx
-    if force:
-        # nearest slot by clock distance
-        mins_now = now.hour * 60 + now.minute
-        return min(range(len(SLOTS)),
-                   key=lambda i: abs(SLOTS[i]["at"][0] * 60 + SLOTS[i]["at"][1] - mins_now))
-    return None
+    start = now.replace(hour=RUN_AT[0], minute=RUN_AT[1], second=0, microsecond=0)
+    return start <= now < start + timedelta(minutes=WINDOW_MINUTES)
+
+
+def themes_for_today(day=None):
+    """Rotate THEMES_PER_RUN themes per day so all five stay covered."""
+    day = day or date.today()
+    start = (day.toordinal() * THEMES_PER_RUN) % len(THEMES)
+    return [THEMES[(start + i) % len(THEMES)] for i in range(THEMES_PER_RUN)]
 
 # ---------------------------------------------------------------- api
 
 
 def api_search(api_key, query, extra, state):
-    """One JSearch request. Returns list of raw job dicts."""
+    """One JSearch request. Returns a list of raw job dicts, or None on failure."""
     month = f"{datetime.now(ET):%Y-%m}"
     used = state.get("requests", {}).get(month, 0)
     if used >= MONTHLY_REQUEST_CAP:
-        log(f"SKIP: monthly request cap reached ({used}/{MONTHLY_REQUEST_CAP})")
+        log(f"  SKIP: monthly request cap reached ({used}/{MONTHLY_REQUEST_CAP})")
         return None
 
     params = {
@@ -160,7 +176,7 @@ def api_search(api_key, query, extra, state):
                 payload = json.loads(resp.read().decode())
             state.setdefault("requests", {})[month] = used + 1
             data = payload.get("data") or []
-            log(f"  query={query!r} extra={extra} -> {len(data)} results "
+            log(f"  {query!r}{' [remote]' if extra else ''} -> {len(data)} results "
                 f"(request {used + 1}/{MONTHLY_REQUEST_CAP} this month)")
             return data
         except urllib.error.HTTPError as exc:
@@ -209,7 +225,7 @@ def location_label(job):
     return label or (job.get("job_country") or "United States")
 
 
-def normalize(job, bucket):
+def normalize(job, bucket, theme=None):
     lo, hi, cur, posted = annual_salary(job)
     title = job.get("job_title") or ""
     desc = (job.get("job_description") or "").strip()
@@ -221,6 +237,7 @@ def normalize(job, bucket):
         "location": location_label(job),
         "is_remote": bool(job.get("job_is_remote")),
         "bucket": bucket,                       # "nyc" or "remote"
+        "theme": theme,
         "employment_type": (job.get("job_employment_type") or "").title(),
         "salary_min": lo,
         "salary_max": hi,
@@ -255,45 +272,46 @@ def keep(job):
 # ---------------------------------------------------------------- run
 
 
-def run(api_key, slot_idx, state, store):
-    slot = SLOTS[slot_idx]
-    query = slot["query"]
-    log(f"Slot {slot_idx} ({slot['label']}) - title group: {query!r}")
-
-    searches = [
-        ("nyc", f"{query} in New York, NY", {}),
-        ("remote", f"{query} in United States", {"remote_jobs_only": "true"}),
-    ]
+def run(api_key, themes, state, store):
+    log(f"Searching {len(themes)} themes x 2 locations = {len(themes) * 2} requests")
+    log(f"Themes today: {', '.join(themes)}")
 
     raw_count = 0
     kept = 0
+    added = 0
     seen_now = now_utc().isoformat(timespec="seconds")
 
-    for bucket, q, extra in searches:
-        results = api_search(api_key, q, extra, state)
-        if results is None:
-            continue
-        raw_count += len(results)
-        for raw in results:
-            job = normalize(raw, bucket)
-            if not job["id"]:
+    for theme in themes:
+        for bucket, query, extra in (
+            ("nyc", f"{theme} in New York, NY", {}),
+            ("remote", f"{theme} in United States", {"remote_jobs_only": "true"}),
+        ):
+            results = api_search(api_key, query, extra, state)
+            if results is None:
                 continue
-            ok, reason = keep(job)
-            if not ok:
-                continue
-            kept += 1
-            existing = store.get(job["id"])
-            if existing:
-                existing.update(job)
-                existing["last_seen"] = seen_now
-            else:
-                job["first_seen"] = seen_now
-                job["last_seen"] = seen_now
-                store[job["id"]] = job
+            raw_count += len(results)
+            for raw in results:
+                job = normalize(raw, bucket, theme)
+                if not job["id"]:
+                    continue
+                ok, _reason = keep(job)
+                if not ok:
+                    continue
+                kept += 1
+                existing = store.get(job["id"])
+                if existing:
+                    first_seen = existing.get("first_seen", seen_now)
+                    existing.update(job)
+                    existing["first_seen"] = first_seen
+                    existing["last_seen"] = seen_now
+                else:
+                    job["first_seen"] = seen_now
+                    job["last_seen"] = seen_now
+                    store[job["id"]] = job
+                    added += 1
 
-    log(f"Searched {raw_count} raw results, {kept} passed the filters.")
+    log(f"Scanned {raw_count} raw results, {kept} passed the filters, {added} brand new.")
 
-    # age out old entries
     cutoff = now_utc() - timedelta(days=RETAIN_DAYS)
     stale = [jid for jid, j in store.items()
              if datetime.fromisoformat(j["last_seen"]) < cutoff]
@@ -304,20 +322,17 @@ def run(api_key, slot_idx, state, store):
 
     state.setdefault("runs", [])
     state["runs"].append({
-        "at": seen_now,
-        "slot": slot_idx,
-        "query": query,
-        "raw": raw_count,
-        "kept": kept,
+        "at": seen_now, "themes": themes,
+        "raw": raw_count, "kept": kept, "added": added,
     })
     state["runs"] = state["runs"][-60:]
-    state["last_slot_done"] = {"date": f"{datetime.now(ET):%Y-%m-%d}", "slot": slot_idx}
+    state["last_run_date"] = f"{datetime.now(ET):%Y-%m-%d}"
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--force", action="store_true", help="run now, nearest slot")
-    ap.add_argument("--slot", type=int, choices=[0, 1, 2])
+    ap.add_argument("--force", action="store_true", help="run now, ignore the clock")
+    ap.add_argument("--all", action="store_true", help="search all five themes")
     ap.add_argument("--render", action="store_true", help="rebuild HTML only")
     args = ap.parse_args()
 
@@ -325,24 +340,23 @@ def main():
     store = load_json(JOBS_FILE, {})
 
     if not args.render:
-        slot_idx = args.slot if args.slot is not None else pick_slot(args.force)
-        if slot_idx is None:
-            log("Not inside a run window - nothing to do. (No API calls spent.)")
-            return 0
-
-        done = state.get("last_slot_done") or {}
-        if (done.get("date") == f"{datetime.now(ET):%Y-%m-%d}"
-                and done.get("slot") == slot_idx and args.slot is None
-                and not args.force):
-            log(f"Slot {slot_idx} already ran today - skipping to protect the quota.")
-            return 0
+        today = f"{datetime.now(ET):%Y-%m-%d}"
+        if not (args.force or args.all):
+            if not in_window():
+                log("Not inside the 9:15am ET run window - nothing to do. "
+                    "(No API calls spent.)")
+                return 0
+            if state.get("last_run_date") == today:
+                log("Already ran today - skipping to protect the API quota.")
+                return 0
 
         api_key = os.environ.get("RAPIDAPI_KEY", "").strip()
         if not api_key:
             log("ERROR: RAPIDAPI_KEY is not set.")
             return 1
 
-        run(api_key, slot_idx, state, store)
+        themes = THEMES if args.all else themes_for_today()
+        run(api_key, themes, state, store)
         save_json(JOBS_FILE, store)
         save_json(STATE_FILE, state)
 

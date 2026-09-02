@@ -2,24 +2,19 @@ name: Job search
 
 on:
   schedule:
-    # Times are UTC. Two sets so the run lands at 9:30am / 1:00pm / 5:30pm
-    # New York time in both daylight saving and standard time. agent.py checks
-    # the actual New York clock and skips any firing that is not a real slot,
-    # so exactly three runs happen per day and no API quota is wasted.
-    - cron: '30 13 * * *'   # 9:30am ET (daylight time)
-    - cron: '0 17 * * *'    # 1:00pm ET (daylight time)
-    - cron: '30 21 * * *'   # 5:30pm ET (daylight time)
-    - cron: '30 14 * * *'   # 9:30am ET (standard time)
-    - cron: '0 18 * * *'    # 1:00pm ET (standard time)
-    - cron: '30 22 * * *'   # 5:30pm ET (standard time)
+    # Times are UTC. Two entries so the run lands at 9:15am New York time in
+    # both daylight saving and standard time. agent.py checks the actual New
+    # York clock and skips any firing that is not the real 9:15am window, so
+    # exactly one run happens per day and no API quota is wasted.
+    - cron: '15 13 * * *'   # 9:15am ET during daylight saving time
+    - cron: '15 14 * * *'   # 9:15am ET during standard time
   workflow_dispatch:
     inputs:
-      slot:
-        description: 'Which title group to search (0 = product manager, 1 = program manager, 2 = transformation lead)'
+      all_themes:
+        description: 'Search all five title themes (10 requests instead of 6)'
         required: false
-        default: '0'
-        type: choice
-        options: ['0', '1', '2']
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -43,7 +38,11 @@ jobs:
           RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            python3 agent.py --slot "${{ inputs.slot }}"
+            if [ "${{ inputs.all_themes }}" = "true" ]; then
+              python3 agent.py --all
+            else
+              python3 agent.py --force
+            fi
           else
             python3 agent.py
           fi
@@ -57,7 +56,7 @@ jobs:
             echo "Nothing changed this run."
             exit 0
           fi
-          git commit -m "Job board update - $(TZ=America/New_York date '+%b %-d %-I:%M %p ET')"
+          git commit -m "Job board update - $(TZ=America/New_York date '+%b %-d %Y')"
           for attempt in 1 2 3; do
             if git push; then exit 0; fi
             echo "Push rejected, rebasing and retrying ($attempt)"

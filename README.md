@@ -1,6 +1,6 @@
 # Job search agent
 
-Searches the JSearch API (RapidAPI) three times a day and rebuilds an HTML
+Searches the JSearch API (RapidAPI) once a day and rebuilds an HTML
 dashboard of matching roles.
 
 **Dashboard:** see the GitHub Pages link in the repo settings.
@@ -12,26 +12,23 @@ dashboard of matching roles.
 | Locations | New York, NY (office / hybrid / remote) and United States (remote only) |
 | Salary floor | $215,000/year. Hourly, monthly and weekly pay is annualized first. |
 | No salary posted | Kept only if the title reads senior (Senior, Principal, Director, Head of, VP, Lead, Chief, Group...) |
-| Titles | program manager, product manager, transformation lead and close relatives — technical program manager, director/head of product, group product manager, product owner, PMO, portfolio manager, change management lead, chief of staff |
+| Titles | product management, program management, project management, transformation, chief of staff — plus close relatives: technical program/project manager, director or head of product, group product manager, product owner, PMO, portfolio manager, delivery lead, change management lead |
 | Recency | Posted in the last 3 days |
 | Job types | Full-time and contract |
-| Retention | A job stays on the board for 30 days after it was last seen; anything found in the last 24 hours wears a NEW badge |
+| Retention | A job stays on the board for 30 days after it was last seen; anything found in the last 36 hours wears a NEW badge |
 
 ## Schedule and API budget
 
-The free RapidAPI plan allows about 200 requests a month. Three runs a day
-leaves room for **2 requests per run** (180/month), so each run searches one
-title group across both locations, rotating through the day:
+Runs **once a day at 9:15am New York time**. The free RapidAPI plan allows about
+200 requests a month, and 30 runs a month leaves room for **6 requests per run**
+(180/month), so each run searches 3 of the 5 title themes across both locations.
 
-| New York time | Title group searched |
-|---|---|
-| 9:30am | product manager |
-| 1:00pm | program manager |
-| 5:30pm | transformation lead |
+The three themes rotate daily, so every theme is searched at least every other
+day. Because each search looks back 3 days, no posting can slip through between
+a theme's turns.
 
-Every group is searched once a day, and the 3-day lookback means nothing is
-missed between rotations. `agent.py` also hard-stops at 190 requests in a
-calendar month so the plan can never go into overage.
+`agent.py` hard-stops at 195 requests in a calendar month, so the plan can never
+go into overage.
 
 ## Files
 
@@ -43,18 +40,20 @@ calendar month so the plan can never go into overage.
 
 ## Running it by hand
 
-On GitHub: **Actions → Job search → Run workflow**, pick a title group.
+On GitHub: **Actions → Job search → Run workflow**. Tick *all five themes* for a
+wider sweep (costs 10 requests instead of 6).
 
 Locally:
 
 ```bash
 export RAPIDAPI_KEY=your_key
-python3 agent.py --force      # search now
+python3 agent.py --force      # search now, today's 3 themes
+python3 agent.py --all        # search all five themes
 python3 agent.py --render     # rebuild the page only, no API calls
 ```
 
 ## Changing the search
 
 Everything tunable lives at the top of `agent.py`: `SALARY_FLOOR`,
-`DATE_POSTED`, `EMPLOYMENT_TYPES`, `RETAIN_DAYS`, `SLOTS` and the title
-patterns.
+`DATE_POSTED`, `EMPLOYMENT_TYPES`, `RETAIN_DAYS`, `RUN_AT`, `THEMES` and the
+title patterns.

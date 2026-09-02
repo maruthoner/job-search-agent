@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
-NEW_FOR_HOURS = 24
+NEW_FOR_HOURS = 36
 SALARY_FLOOR = 215_000
 
 
@@ -80,6 +80,9 @@ def render_dashboard(store, state, out_path):
             "%b %-d, %Y at %-I:%M %p ET")
     month = f"{datetime.now(ET):%Y-%m}"
     used = (state or {}).get("requests", {}).get(month, 0)
+    last_themes = runs[-1].get("themes") if runs else None
+    themes_txt = (", ".join(last_themes) if last_themes
+                  else "product, program, project, transformation and chief of staff roles")
 
     payload = json.dumps(jobs, ensure_ascii=False)
 
@@ -89,6 +92,7 @@ def render_dashboard(store, state, out_path):
         n_nyc=n_nyc, n_remote=n_remote,
         last_run=html.escape(last_run_txt),
         used=used,
+        themes_txt=html.escape(themes_txt),
         generated=datetime.now(ET).strftime("%b %-d, %Y at %-I:%M %p ET"),
     )
     with open(out_path, "w") as fh:
@@ -261,14 +265,14 @@ footer {{
 
 <header class="top">
   <h1>Job Board</h1>
-  <p class="sub">Program &middot; Product &middot; Transformation &nbsp;|&nbsp;
-     New York &amp; US-remote &nbsp;|&nbsp; $215k+ &nbsp;|&nbsp;
+  <p class="sub">Product &middot; Program &middot; Project &middot; Transformation &middot; Chief of Staff
+     &nbsp;|&nbsp; New York &amp; US-remote &nbsp;|&nbsp; $215k+ &nbsp;|&nbsp;
      last run <b>{last_run}</b></p>
 </header>
 
 <div class="tiles">
   <div class="tile"><div class="n">{total}</div><div class="l">On the board</div></div>
-  <div class="tile hl"><div class="n">{n_new}</div><div class="l">New today</div></div>
+  <div class="tile hl"><div class="n">{n_new}</div><div class="l">New</div></div>
   <div class="tile"><div class="n">{n_floor}</div><div class="l">$215k+ listed</div></div>
   <div class="tile"><div class="n">{n_unlisted}</div><div class="l">Pay not listed</div></div>
 </div>
@@ -290,10 +294,11 @@ footer {{
 <div class="list" id="list"></div>
 
 <footer>
-  Built {generated} &middot; {used} API requests used this month (cap 190).<br>
-  Searches run at 9:30am, 1:00pm and 5:30pm ET. Postings from the last 3 days,
-  full-time and contract. Roles with no posted salary are included only when the
-  title reads senior &mdash; verify pay before applying.
+  Built {generated} &middot; {used} of 195 monthly API requests used.<br>
+  Searches run once a day at 9:15am ET across {themes_txt}. Postings from the
+  last 3 days, full-time and contract, New York City or US-remote. Roles with no
+  posted salary are included only when the title reads senior &mdash; verify the
+  pay before applying.
 </footer>
 
 </div>
