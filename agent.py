@@ -34,11 +34,13 @@ HTML_FILE = os.path.join(DOCS_DIR, "index.html")
 
 ET = ZoneInfo("America/New_York")
 API_HOST = "jsearch.p.rapidapi.com"
+API_PATH = "/search-v2"   # /search was retired by the provider
 
 # ---------------------------------------------------------------- settings
 
 SALARY_FLOOR = 215_000
-DATE_POSTED = "3days"          # how far back each search looks
+DATE_POSTED = "3days"          # asked of the API, but it honours this loosely
+MAX_AGE_DAYS = 3               # enforced here on the real posting date
 EMPLOYMENT_TYPES = "FULLTIME,CONTRACTOR"
 RETAIN_DAYS = 30               # how long a job stays on the dashboard
 NEW_FOR_HOURS = 36             # how long a job wears the NEW badge
@@ -196,14 +198,13 @@ def api_search(api_key, query, extra, state):
 
     params = {
         "query": query,
-        "page": "1",
-        "num_pages": "1",
         "date_posted": DATE_POSTED,
         "employment_types": EMPLOYMENT_TYPES,
         "country": "us",
+        "language": "en",
     }
     params.update(extra)
-    url = f"https://{API_HOST}/search?" + urllib.parse.urlencode(params)
+    url = f"https://{API_HOST}{API_PATH}?" + urllib.parse.urlencode(params)
     req = urllib.request.Request(url, headers={
         "X-RapidAPI-Key": api_key,
         "X-RapidAPI-Host": API_HOST,
@@ -217,7 +218,8 @@ def api_search(api_key, query, extra, state):
                 record_quota(state, resp.headers)
             counter = state.setdefault("requests", {})
             counter[month] = counter.get(month, 0) + 1
-            data = payload.get("data") or []
+            data = payload.get("data") or {}
+            data = data.get("jobs", []) if isinstance(data, dict) else data
             left = (state.get("quota") or {}).get("remaining", "?")
             log(f"  {query!r}{' [remote]' if extra else ''} -> {len(data)} results "
                 f"({left} requests left on the plan)")
@@ -247,6 +249,46 @@ def api_search(api_key, query, extra, state):
 # ---------------------------------------------------------------- filtering
 
 
+SALARY_STRING_RE = re.compile(
+    r"(?P<cur>[$£€])?\s*(?P<num>\d[\d,]*(?:\.\d+)?)\s*(?P<k>[KkMm])?")
+PERIOD_WORD_RE = re.compile(
+    r"\b(?:per|an?|/)\s*(hour|hr|year|yr|annum|month|mo|week|wk|day)\b", re.I)
+PERIOD_WORD = {"hour": "HOUR", "hr": "HOUR", "year": "YEAR", "yr": "YEAR",
+               "annum": "YEAR", "month": "MONTH", "mo": "MONTH",
+               "week": "WEEK", "wk": "WEEK", "day": "DAY"}
+
+
+def parse_salary_string(text):
+    """'$150K - $200K a year' -> (150000, 200000, 'YEAR', 'USD'). None if unusable."""
+    if not text:
+        return None
+    if "£" in text or "€" in text:
+        return None                                  # not USD, skip
+    numbers = []
+    for m in SALARY_STRING_RE.finditer(text):
+        raw = m.group("num").replace(",", "")
+        try:
+            val = float(raw)
+        except ValueError:
+            continue
+        suffix = (m.group("k") or "").upper()
+        if suffix == "K":
+            val *= 1_000
+        elif suffix == "M":
+            val *= 1_000_000
+        if val >= 10:                                # ignore stray small numbers
+            numbers.append(val)
+    if not numbers:
+        return None
+    period_match = PERIOD_WORD_RE.search(text)
+    period = PERIOD_WORD.get(period_match.group(1).lower(), "YEAR") if period_match else None
+    if period is None:
+        # no period word: infer from magnitude
+        period = "HOUR" if max(numbers) < 1_000 else "YEAR"
+    lo, hi = min(numbers), max(numbers)
+    return lo, hi, period, "USD"
+
+
 def annual_salary(job):
     """Return (min_annual, max_annual, currency, was_posted)."""
     lo = job.get("job_min_salary")
@@ -259,6 +301,10 @@ def annual_salary(job):
             lo, hi = sal.get("min"), sal.get("max")
             period = (sal.get("period") or period).upper()
             cur = sal.get("currency") or cur
+    if lo is None and hi is None:
+        parsed = parse_salary_string(job.get("job_salary_string"))
+        if parsed:
+            lo, hi, period, cur = parsed
     if lo is None and hi is None:
         return None, None, cur, False
     mult = PERIOD_MULTIPLIER.get(period, 1)
@@ -288,22 +334,38 @@ def normalize(job, bucket, theme=None):
         "is_remote": bool(job.get("job_is_remote")),
         "bucket": bucket,                       # "nyc" or "remote"
         "theme": theme,
-        "employment_type": (job.get("job_employment_type") or "").title(),
+        "employment_type": (job.get("job_employment_type")
+                            or (job.get("job_employment_types") or [""])[0]).title(),
         "salary_min": lo,
         "salary_max": hi,
         "salary_currency": cur,
         "salary_posted": posted,
         "posted_at": job.get("job_posted_at_datetime_utc"),
-        "apply_link": job.get("job_apply_link"),
+        "apply_link": (job.get("job_apply_link")
+                       or (job.get("apply_options") or [{}])[0].get("apply_link")),
         "publisher": job.get("job_publisher"),
         "snippet": re.sub(r"\s+", " ", desc)[:420],
         "senior": bool(SENIOR_RE.search(title)),
     }
 
 
+def too_old(job):
+    """The API honours date_posted loosely, so check the real posting date."""
+    stamp = job.get("posted_at")
+    if not stamp:
+        return False                                 # unknown date - give it the benefit
+    try:
+        posted = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return (now_utc() - posted).days > MAX_AGE_DAYS
+
+
 def keep(job):
-    """Apply the title and salary rules. Returns (keep?, reason)."""
+    """Apply the title, freshness and salary rules. Returns (keep?, reason)."""
     title = job["title"]
+    if too_old(job):
+        return False, f"posted more than {MAX_AGE_DAYS} days ago"
     if not TITLE_RE.search(title):
         return False, "title does not match"
     if TITLE_EXCLUDE_RE.search(title):
@@ -336,7 +398,7 @@ def run(api_key, themes, state, store):
     for theme in themes:
         for bucket, query, extra in (
             ("nyc", f"{theme} in New York, NY", {}),
-            ("remote", f"{theme} in United States", {"remote_jobs_only": "true"}),
+            ("remote", f"{theme} in United States", {"work_from_home": "true"}),
         ):
             results = api_search(api_key, query, extra, state)
             if results is None:
