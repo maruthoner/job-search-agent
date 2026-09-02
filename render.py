@@ -82,7 +82,7 @@ def render_dashboard(store, state, out_path):
     used = (state or {}).get("requests", {}).get(month, 0)
     last_themes = runs[-1].get("themes") if runs else None
     themes_txt = (", ".join(last_themes) if last_themes
-                  else "product, program, project, transformation and chief of staff roles")
+                  else "product, program, project, transformation, chief of staff and AI enablement roles")
 
     payload = json.dumps(jobs, ensure_ascii=False)
 
@@ -265,8 +265,9 @@ footer {{
 
 <header class="top">
   <h1>Job Board</h1>
-  <p class="sub">Product &middot; Program &middot; Project &middot; Transformation &middot; Chief of Staff
-     &nbsp;|&nbsp; New York &amp; US-remote &nbsp;|&nbsp; $215k+ &nbsp;|&nbsp;
+  <p class="sub">Product &middot; Program &middot; Project &middot; Transformation &middot;
+     Chief of Staff &middot; AI Enablement<br>
+     New York &amp; US-remote &nbsp;|&nbsp; $215k+ &nbsp;|&nbsp;
      last run <b>{last_run}</b></p>
 </header>
 
@@ -298,7 +299,8 @@ footer {{
   Searches run once a day at 9:15am ET across {themes_txt}. Postings from the
   last 3 days, full-time and contract, New York City or US-remote. Roles with no
   posted salary are included only when the title reads senior &mdash; verify the
-  pay before applying.
+  pay before applying. Titles containing <em>technical</em>, <em>construction</em>
+  or <em>clinical</em> are filtered out.
 </footer>
 
 </div>

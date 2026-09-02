@@ -56,6 +56,7 @@ THEMES = [
     "project manager",
     "transformation lead",
     "chief of staff",
+    "AI enablement",
 ]
 THEMES_PER_RUN = 3
 
@@ -64,11 +65,9 @@ TITLE_PATTERNS = [
     # program
     r"\bprogram(me)?\s+manager\b", r"\bprogram(me)?\s+lead\b",
     r"\bprogram(me)?\s+director\b", r"\bprogram(me)?\s+management\b",
-    r"\btechnical\s+program\s+manager\b", r"\btpm\b",
     # project
     r"\bproject\s+manager\b", r"\bproject\s+management\b", r"\bproject\s+lead\b",
     r"\bproject\s+director\b", r"\bdirector\s+of\s+projects?\b",
-    r"\btechnical\s+project\s+manager\b",
     # product
     r"\bproduct\s+manager\b", r"\bproduct\s+management\b", r"\bproduct\s+lead\b",
     r"\bproduct\s+owner\b", r"\bdirector\s+of\s+product\b",
@@ -77,17 +76,26 @@ TITLE_PATTERNS = [
     r"\btransformation\b", r"\bchange\s+management\b", r"\bchange\s+lead\b",
     r"\bbusiness\s+change\b",
     # portfolio / PMO / chief of staff
-    r"\bpmo\b", r"\bportfolio\s+manager\b", r"\bportfolio\s+lead\b",
+    # AI enablement / adoption
+    r"\b(ai|a\.i\.|artificial\s+intelligence|gen\s?ai|generative\s+ai)\s*"
+    r"(enablement|adoption|transformation|readiness|strategy|program|programme)\b",
+    r"\benablement\s+(lead|leader|manager|director|head)\b",
+    r"\bhead\s+of\s+ai\b", r"\bdirector\s+of\s+ai\b",
     r"\bportfolio\s+director\b", r"\bchief\s+of\s+staff\b",
     r"\bdelivery\s+manager\b", r"\bdelivery\s+lead\b",
 ]
 TITLE_RE = re.compile("|".join(TITLE_PATTERNS), re.I)
 
-# Junk that sometimes matches the patterns above.
+# Titles that match the patterns above but are not roles Ruth wants.
+# "technical" is excluded outright, which also rules out Technical Program
+# Manager, Technical Project Manager and TPM.
 TITLE_EXCLUDE_RE = re.compile(
-    r"\b(intern|internship|apprentice|assistant to|coordinator|"
+    r"\b(technical|technically|"
+    r"construction|constructions|builder|contracting|"
+    r"clinical|clinician|preclinical|"
+    r"intern|internship|apprentice|assistant to|coordinator|"
     r"junior|entry[- ]level|associate product manager|graduate|"
-    r"trainee|analyst i\b)\b", re.I)
+    r"trainee|analyst i)\b", re.I)
 
 # For jobs with no posted salary: only keep them if the title reads senior.
 SENIOR_RE = re.compile(
