@@ -59,17 +59,21 @@ def render_dashboard(store, state, out_path):
             and (job.get("salary_max") or job.get("salary_min") or 0) >= SALARY_FLOOR)
         item["sort_salary"] = (job.get("salary_max") or job.get("salary_min") or 0)
         item["posted_rel"] = relative(job.get("posted_at"))
-        age_d = None
+        age_d = age_h = None
         if job.get("posted_at"):
             try:
                 posted = datetime.fromisoformat(job["posted_at"].replace("Z", "+00:00"))
+                age_h = (now_utc - posted).total_seconds() / 3600
                 age_d = (now_utc - posted).days
             except ValueError:
-                age_d = None
+                age_d = age_h = None
         item["age_days"] = age_d
+        item["age_hours"] = None if age_d is None else round(age_h, 1)
         item["age_label"] = ("Posted date unknown" if age_d is None
                              else f"Posted {item['posted_rel']}")
         item["age_stale"] = age_d is not None and age_d >= 7
+        item["sources"] = {"adzuna": "Adzuna", "jsearch": "JSearch"}.get(
+            job.get("source", ""), "")
         item["found_rel"] = relative(job.get("first_seen"))
         jobs.append(item)
 
@@ -84,6 +88,8 @@ def render_dashboard(store, state, out_path):
             continue
         if item["bucket"] != prior["bucket"]:
             prior["both_locations"] = True
+        if item["sources"] and item["sources"] not in prior["sources"]:
+            prior["sources"] = f"{prior['sources']} + {item['sources']}"
         # keep whichever copy actually carries a salary
         if item["meets_floor"] and not prior["meets_floor"]:
             item["both_locations"] = prior.get("both_locations", False)
@@ -99,7 +105,8 @@ def render_dashboard(store, state, out_path):
     n_unlisted = total - n_floor
     n_nyc = sum(1 for j in jobs if j["bucket"] == "nyc")
     n_remote = sum(1 for j in jobs if j["bucket"] == "remote")
-    n_dated = sum(1 for j in jobs if j["age_days"] is not None)
+    n_fresh = sum(1 for j in jobs
+                  if j["age_hours"] is not None and j["age_hours"] <= 25)
 
     runs = (state or {}).get("runs", [])
     last_run = runs[-1]["at"] if runs else None
@@ -134,7 +141,7 @@ def render_dashboard(store, state, out_path):
     doc = TEMPLATE.format(
         payload=payload,
         total=total, n_new=n_new, n_floor=n_floor, n_unlisted=n_unlisted,
-        n_nyc=n_nyc, n_remote=n_remote, n_dated=n_dated,
+        n_nyc=n_nyc, n_remote=n_remote, n_fresh=n_fresh,
         last_run=html.escape(last_run_txt),
         quota_txt=html.escape(quota_txt),
         funnel=funnel,
@@ -266,6 +273,8 @@ select {{
 .badge.age.stale {{ background:var(--new-soft); color:var(--new);
   border-color:color-mix(in srgb, var(--new) 30%, transparent); font-weight:560; }}
 .badge.age.unknown {{ font-style:italic; }}
+.badge.src {{ font-size:10.5px; letter-spacing:.05em; text-transform:uppercase;
+  color:var(--faint); }}
 .badge.newb {{ background:var(--new-soft); color:var(--new);
   border-color:color-mix(in srgb, var(--new) 35%, transparent); font-weight:600;
   letter-spacing:.07em; text-transform:uppercase; font-size:10.5px; }}
@@ -342,7 +351,7 @@ footer {{
   <button class="chip" data-filter="nyc" aria-pressed="false">New York {n_nyc}</button>
   <button class="chip" data-filter="remote" aria-pressed="false">Remote {n_remote}</button>
   <button class="chip" data-filter="floor" aria-pressed="false">$215k+ {n_floor}</button>
-  <button class="chip" data-filter="dated" aria-pressed="false">Has a posting date {n_dated}</button>
+  <button class="chip" data-filter="fresh" aria-pressed="false">Posted in last 25h {n_fresh}</button>
   <span class="spacer"></span>
   <select id="sort">
     <option value="new">Newest first</option>
@@ -356,12 +365,14 @@ footer {{
 
 <footer>
   Built {generated} &middot; {quota_txt}.<br>
-  Searches run once a day at 9:15am ET across {themes_txt}. This job source
-  indexes most listings 9+ days after they go up and leaves many undated, so
-  &ldquo;new&rdquo; here means <em>new to this agent</em> &mdash; first seen on
-  the run date, not necessarily just posted. Each card shows the real posting
-  age when the source provides one. Listings known to be over 30 days old are
-  rejected; admitted roles stay for 30 days. Full-time
+  Searches run once a day at 9:15am ET across {themes_txt}.
+  <b>Adzuna</b> runs daily and only admits roles posted in the last 25 hours &mdash;
+  every one carries a verified posting date. <b>JSearch</b> sweeps each Monday for
+  large-employer roles Adzuna does not carry; its index runs over a week behind and
+  leaves many listings undated, so those are admitted on first sighting and show
+  their real age where known. Salary estimates are never allowed to satisfy the
+  $215k floor &mdash; only figures stated by the employer. Admitted roles stay
+  for 30 days. Full-time
   and contract, New York City or US-remote. Roles with no posted salary are included
   only when the title reads senior &mdash; verify the pay before applying. Titles
   containing <em>technical</em>, <em>construction</em> or <em>clinical</em> are
@@ -384,7 +395,7 @@ function matches(j) {{
   if (filter === 'nyc') return j.bucket === 'nyc';
   if (filter === 'remote') return j.bucket === 'remote' || j.is_remote;
   if (filter === 'floor') return j.meets_floor;
-  if (filter === 'dated') return j.age_days !== null;
+  if (filter === 'fresh') return j.age_hours !== null && j.age_hours <= 25;
   return true;
 }}
 
@@ -419,6 +430,7 @@ function card(j) {{
       : (j.is_remote ? '<span class="badge">Remote</span>' : ''),
 
     j.employment_type ? `<span class="badge">${{esc(j.employment_type)}}</span>` : '',
+    j.sources ? `<span class="badge src">${{esc(j.sources)}}</span>` : '',
   ].filter(Boolean).join('');
 
   const meta = [j.posted_rel ? 'posted ' + esc(j.posted_rel) : '',

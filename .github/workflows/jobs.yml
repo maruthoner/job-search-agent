@@ -10,8 +10,8 @@ on:
     - cron: '15 14 * * *'   # 9:15am ET during standard time
   workflow_dispatch:
     inputs:
-      all_themes:
-        description: 'Search all five title themes (10 requests instead of 6)'
+      include_jsearch:
+        description: 'Also run the weekly JSearch sweep (normally Mondays only)'
         required: false
         default: false
         type: boolean
@@ -36,12 +36,14 @@ jobs:
       - name: Search for jobs and rebuild the dashboard
         env:
           RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
+          ADZUNA_APP_ID: ${{ secrets.ADZUNA_APP_ID }}
+          ADZUNA_APP_KEY: ${{ secrets.ADZUNA_APP_KEY }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            if [ "${{ inputs.all_themes }}" = "true" ]; then
-              python3 agent.py --all
+            if [ "${{ inputs.include_jsearch }}" = "true" ]; then
+              python3 agent.py --force --jsearch
             else
-              python3 agent.py --force
+              python3 agent.py --force --adzuna-only
             fi
           else
             python3 agent.py

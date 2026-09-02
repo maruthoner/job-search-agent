@@ -22,7 +22,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -33,17 +33,25 @@ STATE_FILE = os.path.join(DATA_DIR, "state.json")
 HTML_FILE = os.path.join(DOCS_DIR, "index.html")
 
 ET = ZoneInfo("America/New_York")
+
+# Adzuna is the primary source: every listing carries a real posting date and
+# the free tier is generous, so it runs daily with a true 25-hour window.
+ADZUNA_URL = "https://api.adzuna.com/v1/api/jobs/us/search/1"
+ADZUNA_MAX_AGE_HOURS = 25
+ADZUNA_PER_PAGE = 50
+
+# JSearch is the secondary source. Its index runs 9+ days behind and leaves
+# 40% of listings undated, but it surfaces large-employer roles Adzuna misses,
+# so it sweeps once a week on the "new to this agent" basis instead.
 API_HOST = "jsearch.p.rapidapi.com"
 API_PATH = "/search-v2"   # /search was retired by the provider
+JSEARCH_WEEKDAY = 0       # Monday
+JSEARCH_MAX_AGE_DAYS = 30
 
 # ---------------------------------------------------------------- settings
 
 SALARY_FLOOR = 215_000
-# This provider's index runs 9+ days behind and leaves most listings undated,
-# so "fresh" cannot mean "posted recently". It means new to this agent: a role
-# is admitted the first time a run sees it, and wears the NEW badge for 36 hours.
-# The only age rule left is a backstop against genuinely ancient postings.
-MAX_AGE_DAYS = 30              # reject listings whose KNOWN date is older than this
+
 EMPLOYMENT_TYPES = "FULLTIME,CONTRACTOR"
 RETAIN_DAYS = 30               # how long a job stays on the dashboard
 NEW_FOR_HOURS = 36             # how long a job wears the NEW badge
@@ -53,9 +61,8 @@ QUOTA_RESERVE = 5              # stop this many requests short of the real limit
 RUN_AT = (9, 15)               # 9:15am New York time
 WINDOW_MINUTES = 75            # a late GitHub Actions start still counts
 
-# The five title themes. Three are searched each day, rotating, so every theme
-# is searched at least every other day - comfortably inside the 3-day lookback,
-# so no posting can slip through between its turns.
+# All themes are searched on every run. Adzuna's free tier allows hundreds of
+# calls a day, so there is no need to rotate them.
 THEMES = [
     "product manager",
     "program manager",
@@ -64,7 +71,6 @@ THEMES = [
     "chief of staff",
     "AI enablement",
 ]
-THEMES_PER_RUN = 3
 
 # A job is kept only if its title looks like one of these.
 TITLE_PATTERNS = [
@@ -151,12 +157,6 @@ def in_window():
     start = now.replace(hour=RUN_AT[0], minute=RUN_AT[1], second=0, microsecond=0)
     return start <= now < start + timedelta(minutes=WINDOW_MINUTES)
 
-
-def themes_for_today(day=None):
-    """Rotate THEMES_PER_RUN themes per day so all five stay covered."""
-    day = day or date.today()
-    start = (day.toordinal() * THEMES_PER_RUN) % len(THEMES)
-    return [THEMES[(start + i) % len(THEMES)] for i in range(THEMES_PER_RUN)]
 
 # ---------------------------------------------------------------- api
 
@@ -249,6 +249,84 @@ def api_search(api_key, query, extra, state):
     log(f"  FAILED: {last_err}")
     return None
 
+def adzuna_search(theme, bucket, state):
+    """One Adzuna request. Returns a list of raw job dicts, or None on failure."""
+    app_id = os.environ.get("ADZUNA_APP_ID", "").strip()
+    app_key = os.environ.get("ADZUNA_APP_KEY", "").strip()
+    if not (app_id and app_key):
+        log("  ERROR: ADZUNA_APP_ID / ADZUNA_APP_KEY are not set.")
+        return None
+
+    params = {
+        "app_id": app_id, "app_key": app_key,
+        "results_per_page": str(ADZUNA_PER_PAGE),
+        "what": theme if bucket == "nyc" else f"{theme} remote",
+        "sort_by": "date",
+        "max_days_old": "2",          # a day of slack; the real cut is 25 hours
+        "content-type": "application/json",
+    }
+    if bucket == "nyc":
+        params["where"] = "New York, New York"
+
+    url = ADZUNA_URL + "?" + urllib.parse.urlencode(params)
+    last_err = None
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url), timeout=45) as r:
+                payload = json.loads(r.read().decode())
+            month = f"{datetime.now(ET):%Y-%m}"
+            counter = state.setdefault("adzuna_requests", {})
+            counter[month] = counter.get(month, 0) + 1
+            results = payload.get("results") or []
+            log(f"  [adzuna] {theme!r} {bucket} -> {len(results)} listings")
+            return results
+        except urllib.error.HTTPError as exc:
+            last_err = f"HTTP {exc.code}: {exc.read().decode(errors='replace')[:200]}"
+            if exc.code < 500:
+                break
+        except Exception as exc:                      # noqa: BLE001
+            last_err = repr(exc)
+        time.sleep(3 * (attempt + 1))
+    log(f"  [adzuna] FAILED: {last_err}")
+    return None
+
+
+def normalize_adzuna(job, bucket, theme):
+    """Map an Adzuna record onto the same shape as a JSearch one."""
+    predicted = str(job.get("salary_is_predicted", "0")) == "1"
+    lo, hi = job.get("salary_min"), job.get("salary_max")
+    title = job.get("title") or ""
+    desc = re.sub(r"<[^>]+>", " ", job.get("description") or "")
+    location = (job.get("location") or {}).get("display_name") or "United States"
+    blob = f"{title} {desc} {location}".lower()
+    return {
+        "id": f"adzuna:{job.get('id')}",
+        "source": "adzuna",
+        "title": title,
+        "company": (job.get("company") or {}).get("display_name") or "Unknown",
+        "logo": None,
+        "location": location,
+        "is_remote": "remote" in blob or "work from home" in blob,
+        "bucket": bucket,
+        "theme": theme,
+        "employment_type": (job.get("contract_time") or
+                            job.get("contract_type") or "").replace("_", "-").title(),
+        # A predicted salary is Adzuna's estimate, not the employer's figure.
+        # It must never satisfy the salary floor, so it is recorded as unlisted.
+        "salary_min": None if predicted else lo,
+        "salary_max": None if predicted else hi,
+        "salary_currency": "USD",
+        "salary_posted": bool(not predicted and (lo is not None or hi is not None)),
+        "salary_estimated": predicted,
+        "posted_at": job.get("created"),
+        "apply_link": job.get("redirect_url"),
+        "publisher": "Adzuna",
+        "snippet": re.sub(r"\s+", " ", desc).strip()[:420],
+        "senior": bool(SENIOR_RE.search(title)),
+        "date_unknown": not job.get("created"),
+    }
+
+
 # ---------------------------------------------------------------- filtering
 
 
@@ -330,6 +408,7 @@ def normalize(job, bucket, theme=None):
     desc = (job.get("job_description") or "").strip()
     return {
         "id": job.get("job_id"),
+        "source": "jsearch",
         "title": title,
         "company": job.get("employer_name") or "Unknown",
         "logo": job.get("employer_logo"),
@@ -349,6 +428,7 @@ def normalize(job, bucket, theme=None):
         "publisher": job.get("job_publisher"),
         "snippet": re.sub(r"\s+", " ", desc)[:420],
         "senior": bool(SENIOR_RE.search(title)),
+        "salary_estimated": False,
         "date_unknown": not job.get("job_posted_at_datetime_utc"),
     }
 
@@ -366,18 +446,28 @@ def age_hours(job):
 
 
 def too_old(job):
-    """Backstop only. Undated postings are admitted and flagged on the card."""
+    """Each source gets the freshness rule its data can actually support.
+
+    Adzuna dates every listing, so the real 25-hour window is enforced.
+    JSearch leaves 40% undated and runs over a week behind, so those are
+    admitted on first sighting with only a backstop against ancient posts.
+    """
     hours = age_hours(job)
+    if job.get("source") == "adzuna":
+        if hours is None:
+            return True                              # undated: cannot verify, drop it
+        return hours > ADZUNA_MAX_AGE_HOURS
     if hours is None:
         return False
-    return hours > MAX_AGE_DAYS * 24
+    return hours > JSEARCH_MAX_AGE_DAYS * 24
 
 
 def keep(job):
     """Apply the title, freshness and salary rules. Returns (keep?, reason)."""
     title = job["title"]
     if too_old(job):
-        return False, f"posted over {MAX_AGE_DAYS} days ago"
+        return False, ("older than 25 hours" if job.get("source") == "adzuna"
+                       else f"posted over {JSEARCH_MAX_AGE_DAYS} days ago")
     if not TITLE_RE.search(title):
         return False, "wrong title"
     if TITLE_EXCLUDE_RE.search(title):
@@ -396,9 +486,10 @@ def keep(job):
 # ---------------------------------------------------------------- run
 
 
-def run(api_key, themes, state, store):
-    log(f"Searching {len(themes)} themes x 2 locations = {len(themes) * 2} requests")
-    log(f"Themes today: {', '.join(themes)}")
+def run(state, store, include_jsearch, themes):
+    sources = ["Adzuna"] + (["JSearch"] if include_jsearch else [])
+    log(f"Sources this run: {', '.join(sources)}")
+    log(f"Themes: {', '.join(themes)}")
 
     raw_count = 0
     kept = 0
@@ -406,43 +497,69 @@ def run(api_key, themes, state, store):
     ok_searches = 0
     failed_searches = 0
     rejected = {}
+    per_source = {}
     seen_now = now_utc().isoformat(timespec="seconds")
 
+    def ingest(job):
+        nonlocal kept, added
+        if not job["id"]:
+            return
+        ok, reason = keep(job)
+        if not ok:
+            rejected[reason] = rejected.get(reason, 0) + 1
+            return
+        kept += 1
+        per_source[job["source"]] = per_source.get(job["source"], 0) + 1
+        existing = store.get(job["id"])
+        if existing:
+            first_seen = existing.get("first_seen", seen_now)
+            existing.update(job)
+            existing["first_seen"] = first_seen
+            existing["last_seen"] = seen_now
+        else:
+            job["first_seen"] = seen_now
+            job["last_seen"] = seen_now
+            store[job["id"]] = job
+            added += 1
+
+    # ---- Adzuna: every day, real 25-hour window -------------------------
     for theme in themes:
-        for bucket, query, extra in (
-            ("nyc", f"{theme} in New York, NY", {}),
-            ("remote", f"{theme} in United States", {"work_from_home": "true"}),
-        ):
-            results = api_search(api_key, query, extra, state)
+        for bucket in ("nyc", "remote"):
+            results = adzuna_search(theme, bucket, state)
             if results is None:
                 failed_searches += 1
                 continue
             ok_searches += 1
             raw_count += len(results)
             for raw in results:
-                job = normalize(raw, bucket, theme)
-                if not job["id"]:
-                    continue
-                ok, reason = keep(job)
-                if not ok:
-                    rejected[reason] = rejected.get(reason, 0) + 1
-                    continue
-                kept += 1
-                existing = store.get(job["id"])
-                if existing:
-                    first_seen = existing.get("first_seen", seen_now)
-                    existing.update(job)
-                    existing["first_seen"] = first_seen
-                    existing["last_seen"] = seen_now
-                else:
-                    job["first_seen"] = seen_now
-                    job["last_seen"] = seen_now
-                    store[job["id"]] = job
-                    added += 1
+                ingest(normalize_adzuna(raw, bucket, theme))
+
+    # ---- JSearch: weekly sweep for roles Adzuna does not carry ----------
+    if include_jsearch:
+        api_key = os.environ.get("RAPIDAPI_KEY", "").strip()
+        if not api_key:
+            log("  WARNING: RAPIDAPI_KEY not set, skipping the JSearch sweep.")
+        else:
+            for theme in themes:
+                for bucket, query, extra in (
+                    ("nyc", f"{theme} in New York, NY", {}),
+                    ("remote", f"{theme} in United States",
+                     {"work_from_home": "true"}),
+                ):
+                    results = api_search(api_key, query, extra, state)
+                    if results is None:
+                        failed_searches += 1
+                        continue
+                    ok_searches += 1
+                    raw_count += len(results)
+                    for raw in results:
+                        ingest(normalize(raw, bucket, theme))
 
     log(f"{ok_searches} searches succeeded, {failed_searches} failed. "
         f"Scanned {raw_count} listings, {kept} passed the filters, "
         f"{added} brand new.")
+    for source, count in sorted(per_source.items()):
+        log(f"    kept from {source}: {count}")
     for reason, count in sorted(rejected.items(), key=lambda kv: -kv[1]):
         log(f"    rejected - {reason}: {count}")
 
@@ -456,9 +573,10 @@ def run(api_key, themes, state, store):
 
     state.setdefault("runs", [])
     state["runs"].append({
-        "at": seen_now, "themes": themes,
+        "at": seen_now, "themes": themes, "sources": sources,
         "raw": raw_count, "kept": kept, "added": added,
         "rejected": rejected, "searches": ok_searches,
+        "per_source": per_source,
     })
     state["runs"] = state["runs"][-60:]
     state["last_run_date"] = f"{datetime.now(ET):%Y-%m-%d}"
@@ -472,7 +590,10 @@ def run(api_key, themes, state, store):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--force", action="store_true", help="run now, ignore the clock")
-    ap.add_argument("--all", action="store_true", help="search all five themes")
+    ap.add_argument("--jsearch", action="store_true",
+                    help="also run the weekly JSearch sweep now")
+    ap.add_argument("--adzuna-only", action="store_true",
+                    help="skip the JSearch sweep even if it is due")
     ap.add_argument("--render", action="store_true", help="rebuild HTML only")
     args = ap.parse_args()
 
@@ -481,7 +602,7 @@ def main():
 
     if not args.render:
         today = f"{datetime.now(ET):%Y-%m-%d}"
-        if not (args.force or args.all):
+        if not args.force:
             if not in_window():
                 log("Not inside the 9:15am ET run window - nothing to do. "
                     "(No API calls spent.)")
@@ -490,14 +611,12 @@ def main():
                 log("Already ran today - skipping to protect the API quota.")
                 return 0
 
-        api_key = os.environ.get("RAPIDAPI_KEY", "").strip()
-        if not api_key:
-            log("ERROR: RAPIDAPI_KEY is not set.")
-            return 1
-
-        themes = THEMES if args.all else themes_for_today()
+        weekday = datetime.now(ET).weekday()
+        include_jsearch = args.jsearch or weekday == JSEARCH_WEEKDAY
+        if args.adzuna_only:
+            include_jsearch = False
         try:
-            run(api_key, themes, state, store)
+            run(state, store, include_jsearch, THEMES)
         except RuntimeError as exc:
             save_json(STATE_FILE, state)     # keep whatever quota info we learned
             log(f"ERROR: {exc}")
