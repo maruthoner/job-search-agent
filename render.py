@@ -83,7 +83,20 @@ def render_dashboard(store, state, out_path):
     quota = (state or {}).get("quota") or {}
     quota_txt = (f"{quota['remaining']} of {quota.get('limit', 200)} API requests left"
                  if "remaining" in quota else f"{used} API requests used this month")
-    last_themes = runs[-1].get("themes") if runs else None
+    last = runs[-1] if runs else {}
+    rejected = last.get("rejected") or {}
+    if last:
+        parts = [f"scanned <b>{last.get('raw', 0)}</b> listings across "
+                 f"{last.get('searches', 0)} searches"]
+        if rejected:
+            bits = ", ".join(f"{c} {r}" for r, c in
+                             sorted(rejected.items(), key=lambda kv: -kv[1]))
+            parts.append(f"set aside {bits}")
+        parts.append(f"added <b>{last.get('added', 0)}</b> new")
+        funnel = "Last run " + " &middot; ".join(parts) + "."
+    else:
+        funnel = "No run has completed yet."
+    last_themes = last.get("themes") if runs else None
     themes_txt = (", ".join(last_themes) if last_themes
                   else "product, program, project, transformation, chief of staff and AI enablement roles")
 
@@ -95,6 +108,7 @@ def render_dashboard(store, state, out_path):
         n_nyc=n_nyc, n_remote=n_remote,
         last_run=html.escape(last_run_txt),
         quota_txt=html.escape(quota_txt),
+        funnel=funnel,
         themes_txt=html.escape(themes_txt),
         generated=datetime.now(ET).strftime("%b %-d, %Y at %-I:%M %p ET"),
     )
@@ -153,6 +167,13 @@ h1 {{
 .tile .l {{ font-size:11.5px; color:var(--muted); margin-top:3px;
   text-transform:uppercase; letter-spacing:.06em; }}
 .tile.hl .n {{ color:var(--new); }}
+
+.funnel {{
+  margin:-6px 0 16px; font-size:12.5px; color:var(--muted);
+  background:var(--surface-2); border:1px solid var(--border);
+  border-radius:9px; padding:9px 12px; line-height:1.5;
+}}
+.funnel b {{ color:var(--text); font-weight:600; }}
 
 .controls {{
   display:flex; flex-wrap:wrap; gap:7px; align-items:center;
@@ -281,6 +302,8 @@ footer {{
   <div class="tile"><div class="n">{n_unlisted}</div><div class="l">Pay not listed</div></div>
 </div>
 
+<p class="funnel">{funnel}</p>
+
 <div class="controls">
   <button class="chip" data-filter="all" aria-pressed="true">All {total}</button>
   <button class="chip" data-filter="new" aria-pressed="false">New {n_new}</button>
@@ -299,11 +322,12 @@ footer {{
 
 <footer>
   Built {generated} &middot; {quota_txt}.<br>
-  Searches run once a day at 9:15am ET across {themes_txt}. Postings from the
-  last 3 days, full-time and contract, New York City or US-remote. Roles with no
-  posted salary are included only when the title reads senior &mdash; verify the
-  pay before applying. Titles containing <em>technical</em>, <em>construction</em>
-  or <em>clinical</em> are filtered out.
+  Searches run once a day at 9:15am ET across {themes_txt}. Only postings from
+  the last 25 hours are admitted; once admitted a role stays for 30 days. Full-time
+  and contract, New York City or US-remote. Roles with no posted salary are included
+  only when the title reads senior &mdash; verify the pay before applying. Titles
+  containing <em>technical</em>, <em>construction</em> or <em>clinical</em> are
+  filtered out.
 </footer>
 
 </div>
@@ -346,6 +370,7 @@ function card(j) {{
     j.is_new ? '<span class="badge newb">New</span>' : '',
     `<span class="badge">${{esc(j.location)}}</span>`,
     j.is_remote ? '<span class="badge">Remote</span>' : '',
+    j.date_unknown ? '<span class="badge">Posted date unknown</span>' : '',
     j.employment_type ? `<span class="badge">${{esc(j.employment_type)}}</span>` : '',
   ].filter(Boolean).join('');
 
@@ -376,8 +401,12 @@ function draw() {{
   const items = ordered(JOBS.filter(matches));
   list.innerHTML = items.length
     ? items.map(card).join('')
-    : `<div class="empty"><h3>Nothing here yet</h3>
-       <p>No jobs match this filter. The next search runs at 9:30am, 1pm or 5:30pm ET.</p></div>`;
+    : `<div class="empty"><h3>Nothing on the board yet</h3>
+       <p>This is expected some days. Only roles posted in the last 25 hours are
+       admitted, and this job source indexes most listings several days after
+       they go up &mdash; so fresh matches arrive in bursts, not daily.</p>
+       <p>The line above shows exactly what the last run scanned and why each
+       listing was set aside. The next search runs at 9:15am ET.</p></div>`;
 }}
 
 document.querySelectorAll('.chip').forEach(btn => {{

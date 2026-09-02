@@ -39,8 +39,9 @@ API_PATH = "/search-v2"   # /search was retired by the provider
 # ---------------------------------------------------------------- settings
 
 SALARY_FLOOR = 215_000
-DATE_POSTED = "3days"          # asked of the API, but it honours this loosely
-MAX_AGE_DAYS = 3               # enforced here on the real posting date
+MAX_AGE_HOURS = 25             # only admit postings this fresh
+# The provider's own date_posted filter returns zero results, so it is not sent.
+# Freshness is enforced here against each posting's real timestamp.
 EMPLOYMENT_TYPES = "FULLTIME,CONTRACTOR"
 RETAIN_DAYS = 30               # how long a job stays on the dashboard
 NEW_FOR_HOURS = 36             # how long a job wears the NEW badge
@@ -198,7 +199,6 @@ def api_search(api_key, query, extra, state):
 
     params = {
         "query": query,
-        "date_posted": DATE_POSTED,
         "employment_types": EMPLOYMENT_TYPES,
         "country": "us",
         "language": "en",
@@ -346,40 +346,49 @@ def normalize(job, bucket, theme=None):
         "publisher": job.get("job_publisher"),
         "snippet": re.sub(r"\s+", " ", desc)[:420],
         "senior": bool(SENIOR_RE.search(title)),
+        "date_unknown": not job.get("job_posted_at_datetime_utc"),
     }
 
 
-def too_old(job):
-    """The API honours date_posted loosely, so check the real posting date."""
+def age_hours(job):
+    """Hours since the job was posted, or None if the API did not say."""
     stamp = job.get("posted_at")
     if not stamp:
-        return False                                 # unknown date - give it the benefit
+        return None
     try:
         posted = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
     except ValueError:
+        return None
+    return (now_utc() - posted).total_seconds() / 3600
+
+
+def too_old(job):
+    """Postings with no date are admitted and flagged, not silently dropped."""
+    hours = age_hours(job)
+    if hours is None:
         return False
-    return (now_utc() - posted).days > MAX_AGE_DAYS
+    return hours > MAX_AGE_HOURS
 
 
 def keep(job):
     """Apply the title, freshness and salary rules. Returns (keep?, reason)."""
     title = job["title"]
     if too_old(job):
-        return False, f"posted more than {MAX_AGE_DAYS} days ago"
+        return False, "too old"
     if not TITLE_RE.search(title):
-        return False, "title does not match"
+        return False, "wrong title"
     if TITLE_EXCLUDE_RE.search(title):
-        return False, "title excluded"
+        return False, "excluded title"
     if job["salary_posted"]:
         top = job["salary_max"] or job["salary_min"] or 0
         if (job["salary_currency"] or "USD").upper() != "USD":
-            return False, "non-USD salary"
+            return False, "not USD"
         if top < SALARY_FLOOR:
-            return False, f"salary {top} below floor"
+            return False, "below $215k"
         return True, "salary meets floor"
     if job["senior"]:
         return True, "no salary posted, senior title"
-    return False, "no salary posted, title not senior"
+    return False, "no pay, title not senior"
 
 # ---------------------------------------------------------------- run
 
@@ -393,6 +402,7 @@ def run(api_key, themes, state, store):
     added = 0
     ok_searches = 0
     failed_searches = 0
+    rejected = {}
     seen_now = now_utc().isoformat(timespec="seconds")
 
     for theme in themes:
@@ -410,8 +420,9 @@ def run(api_key, themes, state, store):
                 job = normalize(raw, bucket, theme)
                 if not job["id"]:
                     continue
-                ok, _reason = keep(job)
+                ok, reason = keep(job)
                 if not ok:
+                    rejected[reason] = rejected.get(reason, 0) + 1
                     continue
                 kept += 1
                 existing = store.get(job["id"])
@@ -427,8 +438,10 @@ def run(api_key, themes, state, store):
                     added += 1
 
     log(f"{ok_searches} searches succeeded, {failed_searches} failed. "
-        f"Scanned {raw_count} raw results, {kept} passed the filters, "
+        f"Scanned {raw_count} listings, {kept} passed the filters, "
         f"{added} brand new.")
+    for reason, count in sorted(rejected.items(), key=lambda kv: -kv[1]):
+        log(f"    rejected - {reason}: {count}")
 
     cutoff = now_utc() - timedelta(days=RETAIN_DAYS)
     stale = [jid for jid, j in store.items()
@@ -442,6 +455,7 @@ def run(api_key, themes, state, store):
     state["runs"].append({
         "at": seen_now, "themes": themes,
         "raw": raw_count, "kept": kept, "added": added,
+        "rejected": rejected, "searches": ok_searches,
     })
     state["runs"] = state["runs"][-60:]
     state["last_run_date"] = f"{datetime.now(ET):%Y-%m-%d}"
