@@ -1,0 +1,66 @@
+name: Job search
+
+on:
+  schedule:
+    # Times are UTC. Two sets so the run lands at 9:30am / 1:00pm / 5:30pm
+    # New York time in both daylight saving and standard time. agent.py checks
+    # the actual New York clock and skips any firing that is not a real slot,
+    # so exactly three runs happen per day and no API quota is wasted.
+    - cron: '30 13 * * *'   # 9:30am ET (daylight time)
+    - cron: '0 17 * * *'    # 1:00pm ET (daylight time)
+    - cron: '30 21 * * *'   # 5:30pm ET (daylight time)
+    - cron: '30 14 * * *'   # 9:30am ET (standard time)
+    - cron: '0 18 * * *'    # 1:00pm ET (standard time)
+    - cron: '30 22 * * *'   # 5:30pm ET (standard time)
+  workflow_dispatch:
+    inputs:
+      slot:
+        description: 'Which title group to search (0 = product manager, 1 = program manager, 2 = transformation lead)'
+        required: false
+        default: '0'
+        type: choice
+        options: ['0', '1', '2']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: job-search
+  cancel-in-progress: false
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Search for jobs and rebuild the dashboard
+        env:
+          RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            python3 agent.py --slot "${{ inputs.slot }}"
+          else
+            python3 agent.py
+          fi
+
+      - name: Commit the updated dashboard
+        run: |
+          git config user.name  "job-search-agent"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data docs
+          if git diff --cached --quiet; then
+            echo "Nothing changed this run."
+            exit 0
+          fi
+          git commit -m "Job board update - $(TZ=America/New_York date '+%b %-d %-I:%M %p ET')"
+          for attempt in 1 2 3; do
+            if git push; then exit 0; fi
+            echo "Push rejected, rebasing and retrying ($attempt)"
+            git pull --rebase --autostash
+          done
+          exit 1
