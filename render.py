@@ -59,6 +59,17 @@ def render_dashboard(store, state, out_path):
             and (job.get("salary_max") or job.get("salary_min") or 0) >= SALARY_FLOOR)
         item["sort_salary"] = (job.get("salary_max") or job.get("salary_min") or 0)
         item["posted_rel"] = relative(job.get("posted_at"))
+        age_d = None
+        if job.get("posted_at"):
+            try:
+                posted = datetime.fromisoformat(job["posted_at"].replace("Z", "+00:00"))
+                age_d = (now_utc - posted).days
+            except ValueError:
+                age_d = None
+        item["age_days"] = age_d
+        item["age_label"] = ("Posted date unknown" if age_d is None
+                             else f"Posted {item['posted_rel']}")
+        item["age_stale"] = age_d is not None and age_d >= 7
         item["found_rel"] = relative(job.get("first_seen"))
         jobs.append(item)
 
@@ -88,6 +99,7 @@ def render_dashboard(store, state, out_path):
     n_unlisted = total - n_floor
     n_nyc = sum(1 for j in jobs if j["bucket"] == "nyc")
     n_remote = sum(1 for j in jobs if j["bucket"] == "remote")
+    n_dated = sum(1 for j in jobs if j["age_days"] is not None)
 
     runs = (state or {}).get("runs", [])
     last_run = runs[-1]["at"] if runs else None
@@ -122,7 +134,7 @@ def render_dashboard(store, state, out_path):
     doc = TEMPLATE.format(
         payload=payload,
         total=total, n_new=n_new, n_floor=n_floor, n_unlisted=n_unlisted,
-        n_nyc=n_nyc, n_remote=n_remote,
+        n_nyc=n_nyc, n_remote=n_remote, n_dated=n_dated,
         last_run=html.escape(last_run_txt),
         quota_txt=html.escape(quota_txt),
         funnel=funnel,
@@ -251,6 +263,9 @@ select {{
   border-color:color-mix(in srgb, var(--accent) 30%, transparent); font-weight:580; }}
 .badge.sal.unlisted {{ background:var(--surface-2); color:var(--muted);
   border-color:var(--border); font-weight:450; }}
+.badge.age.stale {{ background:var(--new-soft); color:var(--new);
+  border-color:color-mix(in srgb, var(--new) 30%, transparent); font-weight:560; }}
+.badge.age.unknown {{ font-style:italic; }}
 .badge.newb {{ background:var(--new-soft); color:var(--new);
   border-color:color-mix(in srgb, var(--new) 35%, transparent); font-weight:600;
   letter-spacing:.07em; text-transform:uppercase; font-size:10.5px; }}
@@ -314,7 +329,7 @@ footer {{
 
 <div class="tiles">
   <div class="tile"><div class="n">{total}</div><div class="l">On the board</div></div>
-  <div class="tile hl"><div class="n">{n_new}</div><div class="l">New</div></div>
+  <div class="tile hl"><div class="n">{n_new}</div><div class="l">New to you</div></div>
   <div class="tile"><div class="n">{n_floor}</div><div class="l">$215k+ listed</div></div>
   <div class="tile"><div class="n">{n_unlisted}</div><div class="l">Pay not listed</div></div>
 </div>
@@ -327,10 +342,12 @@ footer {{
   <button class="chip" data-filter="nyc" aria-pressed="false">New York {n_nyc}</button>
   <button class="chip" data-filter="remote" aria-pressed="false">Remote {n_remote}</button>
   <button class="chip" data-filter="floor" aria-pressed="false">$215k+ {n_floor}</button>
+  <button class="chip" data-filter="dated" aria-pressed="false">Has a posting date {n_dated}</button>
   <span class="spacer"></span>
   <select id="sort">
     <option value="new">Newest first</option>
     <option value="salary">Highest salary</option>
+    <option value="posted">Newest posting date</option>
     <option value="company">Company A–Z</option>
   </select>
 </div>
@@ -339,8 +356,12 @@ footer {{
 
 <footer>
   Built {generated} &middot; {quota_txt}.<br>
-  Searches run once a day at 9:15am ET across {themes_txt}. Only postings from
-  the last 25 hours are admitted; once admitted a role stays for 30 days. Full-time
+  Searches run once a day at 9:15am ET across {themes_txt}. This job source
+  indexes most listings 9+ days after they go up and leaves many undated, so
+  &ldquo;new&rdquo; here means <em>new to this agent</em> &mdash; first seen on
+  the run date, not necessarily just posted. Each card shows the real posting
+  age when the source provides one. Listings known to be over 30 days old are
+  rejected; admitted roles stay for 30 days. Full-time
   and contract, New York City or US-remote. Roles with no posted salary are included
   only when the title reads senior &mdash; verify the pay before applying. Titles
   containing <em>technical</em>, <em>construction</em> or <em>clinical</em> are
@@ -363,6 +384,7 @@ function matches(j) {{
   if (filter === 'nyc') return j.bucket === 'nyc';
   if (filter === 'remote') return j.bucket === 'remote' || j.is_remote;
   if (filter === 'floor') return j.meets_floor;
+  if (filter === 'dated') return j.age_days !== null;
   return true;
 }}
 
@@ -370,6 +392,12 @@ function ordered(items) {{
   const c = items.slice();
   if (sort === 'salary') c.sort((a, b) => (b.sort_salary || 0) - (a.sort_salary || 0));
   else if (sort === 'company') c.sort((a, b) => a.company.localeCompare(b.company));
+  else if (sort === 'posted') c.sort((a, b) => {{
+    if (a.age_days === null && b.age_days === null) return 0;
+    if (a.age_days === null) return 1;
+    if (b.age_days === null) return -1;
+    return a.age_days - b.age_days;
+  }});
   else c.sort((a, b) => (b.is_new - a.is_new)
       || String(b.first_seen).localeCompare(String(a.first_seen)));
   return c;
@@ -384,11 +412,12 @@ function card(j) {{
 
   const badges = [
     `<span class="badge sal${{j.meets_floor ? '' : ' unlisted'}}">${{esc(j.salary_text)}}</span>`,
-    j.is_new ? '<span class="badge newb">New</span>' : '',
+    j.is_new ? '<span class="badge newb">New to you</span>' : '',
+    `<span class="badge age${{j.age_stale ? ' stale' : ''}}${{j.age_days === null ? ' unknown' : ''}}">${{esc(j.age_label)}}</span>`,
     `<span class="badge">${{esc(j.location)}}</span>`,
     j.both_locations ? '<span class="badge">New York + Remote</span>'
       : (j.is_remote ? '<span class="badge">Remote</span>' : ''),
-    j.date_unknown ? '<span class="badge">Posted date unknown</span>' : '',
+
     j.employment_type ? `<span class="badge">${{esc(j.employment_type)}}</span>` : '',
   ].filter(Boolean).join('');
 
@@ -420,9 +449,8 @@ function draw() {{
   list.innerHTML = items.length
     ? items.map(card).join('')
     : `<div class="empty"><h3>Nothing on the board yet</h3>
-       <p>This is expected some days. Only roles posted in the last 25 hours are
-       admitted, and this job source indexes most listings several days after
-       they go up &mdash; so fresh matches arrive in bursts, not daily.</p>
+       <p>No jobs match this filter. New roles appear here the first run after
+       this job source picks them up.</p>
        <p>The line above shows exactly what the last run scanned and why each
        listing was set aside. The next search runs at 9:15am ET.</p></div>`;
 }}

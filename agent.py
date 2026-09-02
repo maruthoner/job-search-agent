@@ -39,9 +39,11 @@ API_PATH = "/search-v2"   # /search was retired by the provider
 # ---------------------------------------------------------------- settings
 
 SALARY_FLOOR = 215_000
-MAX_AGE_HOURS = 25             # only admit postings this fresh
-# The provider's own date_posted filter returns zero results, so it is not sent.
-# Freshness is enforced here against each posting's real timestamp.
+# This provider's index runs 9+ days behind and leaves most listings undated,
+# so "fresh" cannot mean "posted recently". It means new to this agent: a role
+# is admitted the first time a run sees it, and wears the NEW badge for 36 hours.
+# The only age rule left is a backstop against genuinely ancient postings.
+MAX_AGE_DAYS = 30              # reject listings whose KNOWN date is older than this
 EMPLOYMENT_TYPES = "FULLTIME,CONTRACTOR"
 RETAIN_DAYS = 30               # how long a job stays on the dashboard
 NEW_FOR_HOURS = 36             # how long a job wears the NEW badge
@@ -364,18 +366,18 @@ def age_hours(job):
 
 
 def too_old(job):
-    """Postings with no date are admitted and flagged, not silently dropped."""
+    """Backstop only. Undated postings are admitted and flagged on the card."""
     hours = age_hours(job)
     if hours is None:
         return False
-    return hours > MAX_AGE_HOURS
+    return hours > MAX_AGE_DAYS * 24
 
 
 def keep(job):
     """Apply the title, freshness and salary rules. Returns (keep?, reason)."""
     title = job["title"]
     if too_old(job):
-        return False, "too old"
+        return False, f"posted over {MAX_AGE_DAYS} days ago"
     if not TITLE_RE.search(title):
         return False, "wrong title"
     if TITLE_EXCLUDE_RE.search(title):
