@@ -7,53 +7,32 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Measure fresh-job yield per filter combination
+      - name: Dump every date field the API returns
         env:
           RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
         run: |
           python3 - <<'PY'
-          import json, os, urllib.parse, urllib.request, urllib.error
-          from datetime import datetime, timezone
+          import json, os, urllib.parse, urllib.request
 
           key = os.environ["RAPIDAPI_KEY"].strip()
           host = "jsearch.p.rapidapi.com"
-          now = datetime.now(timezone.utc)
 
-          def fresh_days(job):
-              s = job.get("job_posted_at_datetime_utc")
-              if not s:
-                  return None
-              try:
-                  return (now - datetime.fromisoformat(s.replace("Z", "+00:00"))).days
-              except ValueError:
-                  return None
-
-          variants = [
-              ("query only",                    {}),
-              ("+ date_posted=3days",           {"date_posted": "3days"}),
-              ("+ employment_types",            {"employment_types": "FULLTIME,CONTRACTOR"}),
-              ("+ BOTH",                        {"date_posted": "3days",
-                                                 "employment_types": "FULLTIME,CONTRACTOR"}),
-          ]
-
-          for label, extra in variants:
-              p = {"query": "product manager in New York, NY",
-                   "country": "us", "language": "en"}
-              p.update(extra)
+          for q in ("chief of staff in United States",
+                    "product manager in New York, NY"):
+              p = {"query": q, "country": "us", "language": "en",
+                   "employment_types": "FULLTIME,CONTRACTOR"}
               url = f"https://{host}/search-v2?" + urllib.parse.urlencode(p)
               req = urllib.request.Request(url, headers={
                   "X-RapidAPI-Key": key, "X-RapidAPI-Host": host})
-              try:
-                  with urllib.request.urlopen(req, timeout=45) as r:
-                      pl = json.loads(r.read().decode())
-                      left = r.headers.get("x-ratelimit-requests-remaining")
-              except urllib.error.HTTPError as e:
-                  print(f"{label:24} HTTP {e.code}")
-                  continue
+              with urllib.request.urlopen(req, timeout=45) as r:
+                  pl = json.loads(r.read().decode())
+                  left = r.headers.get("x-ratelimit-requests-remaining")
               jobs = (pl.get("data") or {}).get("jobs") or []
-              ages = [fresh_days(j) for j in jobs]
-              within3 = sum(1 for a in ages if a is not None and a <= 3)
-              shown = ", ".join("?" if a is None else f"{a}d" for a in ages[:10])
-              print(f"{label:24} {len(jobs):2} jobs | {within3} within 3 days "
-                    f"| ages: {shown} | left={left}")
+              print(f"\n=== {q}  ({len(jobs)} jobs, {left} requests left)")
+              print(f"{'job_posted_at':18} {'..._datetime_utc':26} {'..._timestamp':14} TITLE")
+              for j in jobs:
+                  print(f"{str(j.get('job_posted_at')):18} "
+                        f"{str(j.get('job_posted_at_datetime_utc')):26} "
+                        f"{str(j.get('job_posted_at_timestamp')):14} "
+                        f"{str(j.get('job_title'))[:40]}")
           PY
