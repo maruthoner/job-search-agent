@@ -1,22 +1,11 @@
 {
-  "last_run_date": "2026-09-02",
-  "requests": {
-    "2026-09": 12
+  "quota": {
+    "checked_at": "2026-09-02T13:11:00+00:00",
+    "limit": 200,
+    "remaining": 197
   },
-  "runs": [
-    {
-      "added": 0,
-      "at": "2026-09-02T13:09:53+00:00",
-      "kept": 0,
-      "raw": 0,
-      "themes": [
-        "product manager",
-        "program manager",
-        "project manager",
-        "transformation lead",
-        "chief of staff",
-        "AI enablement"
-      ]
-    }
-  ]
+  "requests": {
+    "2026-09": 3
+  },
+  "runs": []
 }

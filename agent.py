@@ -42,7 +42,8 @@ DATE_POSTED = "3days"          # how far back each search looks
 EMPLOYMENT_TYPES = "FULLTIME,CONTRACTOR"
 RETAIN_DAYS = 30               # how long a job stays on the dashboard
 NEW_FOR_HOURS = 36             # how long a job wears the NEW badge
-MONTHLY_REQUEST_CAP = 195      # hard stop so we never exceed the 200/mo plan
+MONTHLY_REQUEST_CAP = 195      # fallback cap if the API stops reporting quota
+QUOTA_RESERVE = 5              # stop this many requests short of the real limit
 
 RUN_AT = (9, 15)               # 9:15am New York time
 WINDOW_MINUTES = 75            # a late GitHub Actions start still counts
@@ -154,12 +155,43 @@ def themes_for_today(day=None):
 # ---------------------------------------------------------------- api
 
 
-def api_search(api_key, query, extra, state):
-    """One JSearch request. Returns a list of raw job dicts, or None on failure."""
+def record_quota(state, headers):
+    """RapidAPI reports the true remaining allowance on every billed response."""
+    remaining = headers.get("x-ratelimit-requests-remaining")
+    limit = headers.get("x-ratelimit-requests-limit")
+    if remaining is None:
+        return
+    try:
+        state["quota"] = {
+            "remaining": int(remaining),
+            "limit": int(limit) if limit is not None else None,
+            "checked_at": now_utc().isoformat(timespec="seconds"),
+        }
+    except ValueError:
+        pass
+
+
+def out_of_quota(state):
+    """True if the real allowance is nearly spent. Falls back to local counting."""
+    quota = state.get("quota") or {}
+    if "remaining" in quota:
+        if quota["remaining"] <= QUOTA_RESERVE:
+            log(f"  SKIP: only {quota['remaining']} requests left on the plan "
+                f"(reserve is {QUOTA_RESERVE})")
+            return True
+        return False
     month = f"{datetime.now(ET):%Y-%m}"
     used = state.get("requests", {}).get(month, 0)
     if used >= MONTHLY_REQUEST_CAP:
-        log(f"  SKIP: monthly request cap reached ({used}/{MONTHLY_REQUEST_CAP})")
+        log(f"  SKIP: local request cap reached ({used}/{MONTHLY_REQUEST_CAP})")
+        return True
+    return False
+
+
+def api_search(api_key, query, extra, state):
+    """One JSearch request. Returns a list of raw job dicts, or None on failure."""
+    month = f"{datetime.now(ET):%Y-%m}"
+    if out_of_quota(state):
         return None
 
     params = {
@@ -182,15 +214,25 @@ def api_search(api_key, query, extra, state):
         try:
             with urllib.request.urlopen(req, timeout=45) as resp:
                 payload = json.loads(resp.read().decode())
-            state.setdefault("requests", {})[month] = used + 1
+                record_quota(state, resp.headers)
+            counter = state.setdefault("requests", {})
+            counter[month] = counter.get(month, 0) + 1
             data = payload.get("data") or []
+            left = (state.get("quota") or {}).get("remaining", "?")
             log(f"  {query!r}{' [remote]' if extra else ''} -> {len(data)} results "
-                f"(request {used + 1}/{MONTHLY_REQUEST_CAP} this month)")
+                f"({left} requests left on the plan)")
             return data
         except urllib.error.HTTPError as exc:
             body = exc.read().decode(errors="replace")[:300]
             last_err = f"HTTP {exc.code}: {body}"
-            state.setdefault("requests", {})[month] = used + 1  # a 4xx still counts
+            record_quota(state, exc.headers)
+            # RapidAPI does not bill 401s or 404s - only count what it charges for.
+            if exc.code not in (401, 404):
+                counter = state.setdefault("requests", {})
+                counter[month] = counter.get(month, 0) + 1
+            if exc.code == 404:
+                log("  The plan on this API key does not include this endpoint.")
+                return None
             if exc.code in (429, 403):
                 log(f"  RATE LIMIT / AUTH problem: {last_err}")
                 return None

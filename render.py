@@ -80,6 +80,9 @@ def render_dashboard(store, state, out_path):
             "%b %-d, %Y at %-I:%M %p ET")
     month = f"{datetime.now(ET):%Y-%m}"
     used = (state or {}).get("requests", {}).get(month, 0)
+    quota = (state or {}).get("quota") or {}
+    quota_txt = (f"{quota['remaining']} of {quota.get('limit', 200)} API requests left"
+                 if "remaining" in quota else f"{used} API requests used this month")
     last_themes = runs[-1].get("themes") if runs else None
     themes_txt = (", ".join(last_themes) if last_themes
                   else "product, program, project, transformation, chief of staff and AI enablement roles")
@@ -91,7 +94,7 @@ def render_dashboard(store, state, out_path):
         total=total, n_new=n_new, n_floor=n_floor, n_unlisted=n_unlisted,
         n_nyc=n_nyc, n_remote=n_remote,
         last_run=html.escape(last_run_txt),
-        used=used,
+        quota_txt=html.escape(quota_txt),
         themes_txt=html.escape(themes_txt),
         generated=datetime.now(ET).strftime("%b %-d, %Y at %-I:%M %p ET"),
     )
@@ -295,7 +298,7 @@ footer {{
 <div class="list" id="list"></div>
 
 <footer>
-  Built {generated} &middot; {used} of 195 monthly API requests used.<br>
+  Built {generated} &middot; {quota_txt}.<br>
   Searches run once a day at 9:15am ET across {themes_txt}. Postings from the
   last 3 days, full-time and contract, New York City or US-remote. Roles with no
   posted salary are included only when the title reads senior &mdash; verify the
