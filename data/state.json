@@ -1,12 +1,12 @@
 {
   "last_run_date": "2026-09-02",
   "quota": {
-    "checked_at": "2026-09-02T13:27:30+00:00",
+    "checked_at": "2026-09-02T13:37:37+00:00",
     "limit": 200,
-    "remaining": 177
+    "remaining": 158
   },
   "requests": {
-    "2026-09": 15
+    "2026-09": 27
   },
   "runs": [
     {
@@ -14,6 +14,27 @@
       "at": "2026-09-02T13:25:55+00:00",
       "kept": 1,
       "raw": 4,
+      "themes": [
+        "product manager",
+        "program manager",
+        "project manager",
+        "transformation lead",
+        "chief of staff",
+        "AI enablement"
+      ]
+    },
+    {
+      "added": 19,
+      "at": "2026-09-02T13:33:38+00:00",
+      "kept": 19,
+      "raw": 120,
+      "rejected": {
+        "below $215k": 14,
+        "excluded title": 5,
+        "no pay, title not senior": 10,
+        "too old": 72
+      },
+      "searches": 12,
       "themes": [
         "product manager",
         "program manager",
