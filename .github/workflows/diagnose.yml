@@ -19,12 +19,13 @@ jobs:
           print(f"Whitespace in key: {any(c.isspace() for c in key)}")
           print()
 
-          candidates = [
-              ("jsearch.p.rapidapi.com", "/search?query=product%20manager%20in%20New%20York&page=1&num_pages=1"),
-              ("jsearch.p.rapidapi.com", "/v1/search?query=test"),
-              ("jsearch.p.rapidapi.com", "/job-details?job_id=test"),
-              ("jsearch.p.rapidapi.com", "/"),
-          ]
+          host = "jsearch.p.rapidapi.com"
+          q = "?query=product%20manager%20in%20New%20York%2C%20NY&page=1&num_pages=1"
+          candidates = [(host, p + q) for p in (
+              "/search-jobs", "/jobs-search", "/job-search", "/search_jobs",
+              "/searchjobs", "/jobs", "/v2/search", "/api/search",
+              "/search-filters", "/estimated-salary", "/company-job-salary",
+          )]
 
           for host, path in candidates:
               url = f"https://{host}{path}"
