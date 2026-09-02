@@ -105,6 +105,12 @@ TITLE_EXCLUDE_RE = re.compile(
     r"\b(technical|technically|"
     r"engineer|engineering|developer|architect|scientist|designer|"
     r"construction|constructions|builder|contracting|"
+    # building trades - these carry $215k+ project manager titles that are not
+    # the kind of programme or product work Ruth is looking for
+    r"high[-\s]?rise|civil|mep|hvac|plumbing|electrical|mechanical|"
+    r"structural|geotechnical|survey|surveyor|surveying|superintendent|"
+    r"masonry|concrete|roofing|drywall|facilities|capital\s+projects|"
+    r"built\s+environment|site\s+safety|"
     r"clinical|clinician|preclinical|"
     r"intern|internship|apprentice|assistant to|coordinator|"
     r"junior|entry[- ]level|associate product manager|graduate|"
