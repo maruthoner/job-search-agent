@@ -114,11 +114,20 @@ TITLE_EXCLUDE_RE = re.compile(
     r"high[-\s]?rise|civil|mep|hvac|plumbing|electrical|mechanical|"
     r"structural|geotechnical|survey|surveyor|surveying|superintendent|"
     r"masonry|concrete|roofing|drywall|facilities|capital\s+projects|"
-    r"built\s+environment|site\s+safety|"
+    r"built\s+environment|site\s+safety|ground\s+up|"
     r"clinical|clinician|preclinical|"
     r"intern|internship|apprentice|assistant to|coordinator|"
     r"junior|entry[- ]level|associate product manager|graduate|"
     r"trainee|analyst i)\b", re.I)
+
+# Some employers are themselves the disqualifier: a construction manager or a
+# commercial property firm posts "Senior Project Manager" with no hint in the
+# title. Matched against the employer name, not the title.
+COMPANY_EXCLUDE_RE = re.compile(
+    r"\b(construction|constructors|contracting|contractors|builders|"
+    r"realty|real\s+estate|properties|property\s+group|roofing|"
+    r"millichap|masonry|paving|excavat\w*)\b", re.I)
+
 
 # For jobs with no posted salary: only keep them if the title reads senior.
 SENIOR_RE = re.compile(
@@ -489,6 +498,8 @@ def keep(job):
         return False, "wrong title"
     if TITLE_EXCLUDE_RE.search(title):
         return False, "excluded title"
+    if COMPANY_EXCLUDE_RE.search(job.get("company") or ""):
+        return False, "trade or property employer"
     if job["salary_posted"]:
         top = job["salary_max"] or job["salary_min"] or 0
         if (job["salary_currency"] or "USD").upper() != "USD":
@@ -517,6 +528,15 @@ def run(state, store, include_jsearch, themes):
     per_source = {}
     seen_now = now_utc().isoformat(timespec="seconds")
 
+    def role_key(job):
+        """Same employer and same title = the same role, however many times a
+        job board relists it under a fresh id."""
+        return (re.sub(r"\W+", " ", (job.get("company") or "")).strip().lower(),
+                re.sub(r"\W+", " ", (job.get("title") or "")).strip().lower())
+
+    # index the board so a relisting updates the role already there
+    by_role = {role_key(j): jid for jid, j in store.items()}
+
     def ingest(job):
         nonlocal kept, added
         if not job["id"]:
@@ -528,6 +548,17 @@ def run(state, store, include_jsearch, themes):
         kept += 1
         per_source[job["source"]] = per_source.get(job["source"], 0) + 1
         existing = store.get(job["id"])
+        if existing is None:
+            twin_id = by_role.get(role_key(job))
+            if twin_id and twin_id in store:
+                twin = store[twin_id]
+                twin["last_seen"] = seen_now
+                # keep whichever copy actually states a salary
+                if job["salary_posted"] and not twin.get("salary_posted"):
+                    for f in ("salary_min", "salary_max", "salary_posted",
+                              "salary_estimated", "apply_link"):
+                        twin[f] = job[f]
+                return
         if existing:
             first_seen = existing.get("first_seen", seen_now)
             existing.update(job)
@@ -537,6 +568,7 @@ def run(state, store, include_jsearch, themes):
             job["first_seen"] = seen_now
             job["last_seen"] = seen_now
             store[job["id"]] = job
+            by_role[role_key(job)] = job["id"]
             added += 1
 
     # ---- Adzuna: every day, real 25-hour window -------------------------
