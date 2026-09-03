@@ -20,17 +20,27 @@ dashboard of matching roles.
 
 ## Schedule and API budget
 
-Runs **once a day at 9:15am New York time**. The free RapidAPI plan allows about
-200 requests a month, and 30 runs a month leaves room for **6 requests per run**
-(186/month), so each run searches 3 of the 6 title themes across both locations.
+Aims for **once a day, from 9:15am New York time**.
 
-The themes rotate daily in two groups of three — product/program/project on
-one day, transformation/chief of staff/AI enablement on the next — so every
-theme is searched every other day. Because each search looks back 3 days, no posting can slip through between
-a theme's turns.
+GitHub's cron scheduler is not reliable - it delays firings and sometimes drops
+them entirely, which is exactly what happened on 3 September 2026 when no run
+occurred at all. So the workflow is scheduled **six times a day** and the script
+decides whether to act:
 
-`agent.py` hard-stops at 195 requests in a calendar month, so the plan can never
-go into overage.
+> If today's run has not happened yet, and it is past 9:15am in New York, run now.
+
+The first firing GitHub actually delivers does the work. Every later one exits in
+about ten seconds having spent no API calls. A late run is always better than no
+run, so there is no cut-off time.
+
+| Source | Cadence | Requests | Freshness rule |
+|---|---|---|---|
+| Adzuna | every day | 12 (free tier allows hundreds/day) | posted in the last 25 hours, date verified |
+| JSearch | Mondays only | 12 of the 200/month | admitted on first sighting; rejected if known to be over 30 days old |
+
+JSearch costs roughly 48-60 requests a month, well inside its 200 limit. The
+remaining allowance covers manual runs. `agent.py` reads the true remaining
+quota from RapidAPI's own response headers rather than counting locally.
 
 ## Files
 

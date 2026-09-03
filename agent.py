@@ -58,8 +58,12 @@ NEW_FOR_HOURS = 36             # how long a job wears the NEW badge
 MONTHLY_REQUEST_CAP = 195      # fallback cap if the API stops reporting quota
 QUOTA_RESERVE = 5              # stop this many requests short of the real limit
 
-RUN_AT = (9, 15)               # 9:15am New York time
-WINDOW_MINUTES = 75            # a late GitHub Actions start still counts
+RUN_AT = (9, 15)               # earliest time of day the run may happen (ET)
+# There is deliberately no "window". GitHub's scheduler drops and delays cron
+# firings, so the rule is simply: if today's run has not happened yet and it is
+# past 9:15am in New York, run now. The workflow fires several times through the
+# morning; the first one GitHub actually delivers does the work and the rest
+# exit in seconds without spending a single API call.
 
 # All themes are searched on every run. Adzuna's free tier allows hundreds of
 # calls a day, so there is no need to rotate them.
@@ -157,11 +161,18 @@ def now_utc():
     return datetime.now(timezone.utc)
 
 
-def in_window():
-    """True if the New York clock is inside today's run window."""
+def due(state):
+    """Is today's run still outstanding? Returns (should_run, why_not)."""
     now = datetime.now(ET)
-    start = now.replace(hour=RUN_AT[0], minute=RUN_AT[1], second=0, microsecond=0)
-    return start <= now < start + timedelta(minutes=WINDOW_MINUTES)
+    today = f"{now:%Y-%m-%d}"
+    if state.get("last_run_date") == today:
+        return False, "already ran today"
+    earliest = now.replace(hour=RUN_AT[0], minute=RUN_AT[1],
+                           second=0, microsecond=0)
+    if now < earliest:
+        return False, (f"before today's {RUN_AT[0]}:{RUN_AT[1]:02d}am ET "
+                       f"start time")
+    return True, ""
 
 
 # ---------------------------------------------------------------- api
@@ -607,14 +618,10 @@ def main():
     store = load_json(JOBS_FILE, {})
 
     if not args.render:
-        today = f"{datetime.now(ET):%Y-%m-%d}"
         if not args.force:
-            if not in_window():
-                log("Not inside the 9:15am ET run window - nothing to do. "
-                    "(No API calls spent.)")
-                return 0
-            if state.get("last_run_date") == today:
-                log("Already ran today - skipping to protect the API quota.")
+            should_run, why_not = due(state)
+            if not should_run:
+                log(f"Nothing to do - {why_not}. (No API calls spent.)")
                 return 0
 
         weekday = datetime.now(ET).weekday()
