@@ -636,6 +636,40 @@ def run(state, store, include_jsearch, themes):
             f"was not refreshed. See the errors above.")
 
 
+def refilter(store):
+    """Re-apply the title, employer and salary rules to the stored board.
+
+    Freshness is deliberately NOT re-applied. It is an *admission* rule, checked
+    against incoming API results at the moment a role is found. Re-running it
+    over the board would evict roles that were correctly admitted on an earlier
+    day - they are meant to stay for RETAIN_DAYS. Use this after changing the
+    title, employer or salary rules; never hand-roll the loop.
+    """
+    removed = []
+    for jid in list(store):
+        job = store[jid]
+        title = job.get("title") or ""
+        reason = None
+        if not TITLE_RE.search(title):
+            reason = "wrong title"
+        elif TITLE_EXCLUDE_RE.search(title):
+            reason = "excluded title"
+        elif COMPANY_EXCLUDE_RE.search(job.get("company") or ""):
+            reason = "trade or property employer"
+        elif job.get("salary_posted"):
+            top = job.get("salary_max") or job.get("salary_min") or 0
+            if (job.get("salary_currency") or "USD").upper() != "USD":
+                reason = "not USD"
+            elif top < SALARY_FLOOR:
+                reason = "below $215k"
+        elif not job.get("senior"):
+            reason = "no pay, title not senior"
+        if reason:
+            removed.append((title, job.get("company"), reason))
+            del store[jid]
+    return removed
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--force", action="store_true", help="run now, ignore the clock")
@@ -644,12 +678,21 @@ def main():
     ap.add_argument("--adzuna-only", action="store_true",
                     help="skip the JSearch sweep even if it is due")
     ap.add_argument("--render", action="store_true", help="rebuild HTML only")
+    ap.add_argument("--refilter", action="store_true",
+                    help="re-apply title/employer/salary rules to the stored "
+                         "board (never re-applies the freshness rule)")
     args = ap.parse_args()
 
     state = load_json(STATE_FILE, {})
     store = load_json(JOBS_FILE, {})
 
-    if not args.render:
+    if args.refilter:
+        for title, company, why in refilter(store):
+            log(f"  removed: {title[:44]:46} {str(company)[:24]:26} ({why})")
+        save_json(JOBS_FILE, store)
+        log(f"{len(store)} jobs remain on the board.")
+
+    if not (args.render or args.refilter):
         if not args.force:
             should_run, why_not = due(state)
             if not should_run:
