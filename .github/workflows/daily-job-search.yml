@@ -1,9 +1,16 @@
-name: Job search
+name: Daily job search
 
 on:
   schedule:
-    # GitHub's scheduler is unreliable on this repo: firings arrive over an hour
-    # late or never arrive at all. Rather than guess which times it will honour,
+    # This file was renamed from jobs.yml on 2026-09-04 to force GitHub to
+    # re-register the schedule. Evidence: every scheduled run GitHub delivered
+    # between 2 and 4 September matched the cron times from the workflow's FIRST
+    # version, and none of the three later schedule edits was ever honoured -
+    # GitHub had kept the registration made when the file was created. A rename
+    # creates a new workflow id, and with it a fresh schedule registration.
+    #
+    # Firings also arrive up to 78 minutes late, so rather than guess which
+    # times GitHub will honour,
     # ask every hour and let the script decide. agent.py runs the search only if
     # today's run is still outstanding and it is past 9:15am in New York, so:
     #   - the first firing GitHub actually delivers does the work
