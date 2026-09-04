@@ -16,7 +16,7 @@ def _money(n):
 
 
 def salary_text(job):
-    if not job.get("salary_posted"):
+    if not job.get("salary_source"):
         return "Salary not listed"
     lo, hi = job.get("salary_min"), job.get("salary_max")
     if lo and hi and lo != hi:
@@ -54,8 +54,10 @@ def render_dashboard(store, state, out_path):
         item = dict(job)
         item["is_new"] = first_seen >= new_cutoff
         item["salary_text"] = salary_text(job)
+        item["salary_known"] = bool(job.get("salary_source"))
+        item["salary_from_text"] = job.get("salary_source") == "text"
         item["meets_floor"] = bool(
-            job.get("salary_posted")
+            job.get("salary_source")
             and (job.get("salary_max") or job.get("salary_min") or 0) >= SALARY_FLOOR)
         item["sort_salary"] = (job.get("salary_max") or job.get("salary_min") or 0)
         item["posted_rel"] = relative(job.get("posted_at"))
@@ -91,7 +93,7 @@ def render_dashboard(store, state, out_path):
         if item["sources"] and item["sources"] not in prior["sources"]:
             prior["sources"] = f"{prior['sources']} + {item['sources']}"
         # keep whichever copy actually carries a salary
-        if item["meets_floor"] and not prior["meets_floor"]:
+        if item["salary_known"] and not prior["salary_known"]:
             item["both_locations"] = prior.get("both_locations", False)
             merged[key] = item
     jobs = list(merged.values())
@@ -107,6 +109,8 @@ def render_dashboard(store, state, out_path):
     n_remote = sum(1 for j in jobs if j["bucket"] == "remote")
     n_fresh = sum(1 for j in jobs
                   if j["age_hours"] is not None and j["age_hours"] <= 25)
+    n_disclosed = sum(1 for j in jobs if j["salary_known"])
+    n_nopay = total - n_disclosed
 
     runs = (state or {}).get("runs", [])
     last_run = runs[-1]["at"] if runs else None
@@ -141,7 +145,7 @@ def render_dashboard(store, state, out_path):
     doc = TEMPLATE.format(
         payload=payload,
         total=total, n_new=n_new, n_floor=n_floor, n_unlisted=n_unlisted,
-        n_nyc=n_nyc, n_remote=n_remote, n_fresh=n_fresh,
+        n_nyc=n_nyc, n_remote=n_remote, n_fresh=n_fresh, n_disclosed=n_disclosed, n_nopay=n_nopay,
         last_run=html.escape(last_run_txt),
         quota_txt=html.escape(quota_txt),
         funnel=funnel,
@@ -273,6 +277,8 @@ select {{
 .badge.age.stale {{ background:var(--new-soft); color:var(--new);
   border-color:color-mix(in srgb, var(--new) 30%, transparent); font-weight:560; }}
 .badge.age.unknown {{ font-style:italic; }}
+.badge.fromtext {{ font-size:10.5px; letter-spacing:.04em; text-transform:uppercase;
+  color:var(--faint); border-style:dashed; }}
 .badge.src {{ font-size:10.5px; letter-spacing:.05em; text-transform:uppercase;
   color:var(--faint); }}
 .badge.newb {{ background:var(--new-soft); color:var(--new);
@@ -339,14 +345,15 @@ footer {{
 <div class="tiles">
   <div class="tile"><div class="n">{total}</div><div class="l">On the board</div></div>
   <div class="tile hl"><div class="n">{n_new}</div><div class="l">New to you</div></div>
-  <div class="tile"><div class="n">{n_floor}</div><div class="l">$215k+ listed</div></div>
-  <div class="tile"><div class="n">{n_unlisted}</div><div class="l">Pay not listed</div></div>
+  <div class="tile"><div class="n">{n_disclosed}</div><div class="l">Pay disclosed</div></div>
+  <div class="tile"><div class="n">{n_nopay}</div><div class="l">Pay not stated</div></div>
 </div>
 
 <p class="funnel">{funnel}</p>
 
 <div class="controls">
-  <button class="chip" data-filter="all" aria-pressed="true">All {total}</button>
+  <button class="chip" data-filter="disclosed" aria-pressed="true">Pay disclosed {n_disclosed}</button>
+  <button class="chip" data-filter="all" aria-pressed="false">All {total}</button>
   <button class="chip" data-filter="new" aria-pressed="false">New {n_new}</button>
   <button class="chip" data-filter="nyc" aria-pressed="false">New York {n_nyc}</button>
   <button class="chip" data-filter="remote" aria-pressed="false">Remote {n_remote}</button>
@@ -383,7 +390,7 @@ footer {{
 <script>
 const JOBS = {payload};
 const list = document.getElementById('list');
-let filter = 'all', sort = 'new';
+let filter = 'disclosed', sort = 'new';
 
 function esc(s) {{
   return String(s == null ? '' : s).replace(/[&<>"']/g, c => (
@@ -391,6 +398,7 @@ function esc(s) {{
 }}
 
 function matches(j) {{
+  if (filter === 'disclosed') return j.salary_known;
   if (filter === 'new') return j.is_new;
   if (filter === 'nyc') return j.bucket === 'nyc';
   if (filter === 'remote') return j.bucket === 'remote' || j.is_remote;
@@ -422,7 +430,8 @@ function card(j) {{
     : `<div class="logo ph">${{esc((j.company || '?')[0]).toUpperCase()}}</div>`;
 
   const badges = [
-    `<span class="badge sal${{j.meets_floor ? '' : ' unlisted'}}">${{esc(j.salary_text)}}</span>`,
+    `<span class="badge sal${{j.salary_known ? '' : ' unlisted'}}">${{esc(j.salary_text)}}</span>`,
+    j.salary_from_text ? '<span class="badge fromtext">from listing text</span>' : '',
     j.is_new ? '<span class="badge newb">New to you</span>' : '',
     `<span class="badge age${{j.age_stale ? ' stale' : ''}}${{j.age_days === null ? ' unknown' : ''}}">${{esc(j.age_label)}}</span>`,
     `<span class="badge">${{esc(j.location)}}</span>`,
@@ -461,8 +470,9 @@ function draw() {{
   list.innerHTML = items.length
     ? items.map(card).join('')
     : `<div class="empty"><h3>Nothing on the board yet</h3>
-       <p>No jobs match this filter. New roles appear here the first run after
-       this job source picks them up.</p>
+       <p>No jobs match this filter. The default view shows only roles whose pay
+       is stated &mdash; tap <b>All</b> to include roles that do not publish a
+       salary.</p>
        <p>The line above shows exactly what the last run scanned and why each
        listing was set aside. The next search runs at 9:15am ET.</p></div>`;
 }}

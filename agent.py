@@ -325,6 +325,12 @@ def normalize_adzuna(job, bucket, theme):
     desc = re.sub(r"<[^>]+>", " ", job.get("description") or "")
     location = (job.get("location") or {}).get("display_name") or "United States"
     blob = f"{title} {desc} {location}".lower()
+    has_field_salary = bool(not predicted and (lo is not None or hi is not None))
+    source = "employer" if has_field_salary else None
+    if not has_field_salary:
+        found = find_salary_in_text(desc)
+        if found:
+            lo, hi, source = found[0], found[1], "text"
     return {
         "id": f"adzuna:{job.get('id')}",
         "source": "adzuna",
@@ -339,10 +345,11 @@ def normalize_adzuna(job, bucket, theme):
                             job.get("contract_type") or "").replace("_", "-").title(),
         # A predicted salary is Adzuna's estimate, not the employer's figure.
         # It must never satisfy the salary floor, so it is recorded as unlisted.
-        "salary_min": None if predicted else lo,
-        "salary_max": None if predicted else hi,
+        "salary_min": lo if source else None,
+        "salary_max": hi if source else None,
         "salary_currency": "USD",
-        "salary_posted": bool(not predicted and (lo is not None or hi is not None)),
+        "salary_posted": has_field_salary,
+        "salary_source": source,
         "salary_estimated": predicted,
         "posted_at": job.get("created"),
         "apply_link": job.get("redirect_url"),
@@ -396,6 +403,82 @@ def parse_salary_string(text):
     return lo, hi, period, "USD"
 
 
+# --- reading pay out of the posting text -------------------------------------
+# Used when the source gives no structured salary. Requires a pay-related word
+# near the figure, so budget and revenue numbers ("a $2M budget", "$5M in new
+# revenue") are not mistaken for compensation.
+_AMOUNT = r"\$\s?(\d{1,3}(?:,\d{3})+|\d+(?:\.\d{1,2})?)\s*([KkMm])?"
+TEXT_RANGE_RE = re.compile(
+    _AMOUNT + r"\s*(?:-|\u2013|\u2014|to|through)\s*" + _AMOUNT, re.I)
+TEXT_SINGLE_RE = re.compile(_AMOUNT)
+PAY_CONTEXT_RE = re.compile(
+    r"(salary|salaries|compensation|base\s+pay|base\s+salary|pay\s+range|"
+    r"pay\s+rate|hiring\s+range|target\s+pay|annual|annually|per\s+year|"
+    r"per\s+annum|/\s*yr|a\s+year|per\s+hour|/\s*hr|hourly|an\s+hour|"
+    r"total\s+cash|remuneration)", re.I)
+PLAUSIBLE_MIN = 30_000
+PLAUSIBLE_MAX = 2_000_000
+
+
+def _amount(num, suffix):
+    try:
+        val = float(num.replace(",", ""))
+    except ValueError:
+        return None
+    if (suffix or "").upper() == "K":
+        val *= 1_000
+    elif (suffix or "").upper() == "M":
+        val *= 1_000_000
+    return val
+
+
+def _period_near(text):
+    low = text.lower()
+    if re.search(r"per\s+hour|/\s*hr|hourly|an\s+hour", low):
+        return "HOUR"
+    if re.search(r"per\s+month|/\s*mo|monthly|a\s+month", low):
+        return "MONTH"
+    return "YEAR"
+
+
+def find_salary_in_text(text):
+    """Pull a pay range out of a job description. (lo, hi) annualised, or None."""
+    if not text:
+        return None
+    candidates = []
+    for match in TEXT_RANGE_RE.finditer(text):
+        window = text[max(0, match.start() - 120): match.end() + 120]
+        if not PAY_CONTEXT_RE.search(window):
+            continue
+        lo = _amount(match.group(1), match.group(2))
+        hi = _amount(match.group(3), match.group(4))
+        if lo is None or hi is None:
+            continue
+        mult = PERIOD_MULTIPLIER.get(_period_near(window), 1)
+        lo, hi = lo * mult, hi * mult
+        if lo > hi:
+            lo, hi = hi, lo
+        if PLAUSIBLE_MIN <= lo and hi <= PLAUSIBLE_MAX:
+            candidates.append((round(lo), round(hi)))
+    if candidates:
+        return min(c[0] for c in candidates), max(c[1] for c in candidates)
+
+    # no range stated - accept a single figure only if pay words sit right on it
+    for match in TEXT_SINGLE_RE.finditer(text):
+        window = text[max(0, match.start() - 90): match.end() + 90]
+        if not PAY_CONTEXT_RE.search(window):
+            continue
+        val = _amount(match.group(1), match.group(2))
+        if val is None:
+            continue
+        val *= PERIOD_MULTIPLIER.get(_period_near(window), 1)
+        if PLAUSIBLE_MIN <= val <= PLAUSIBLE_MAX:
+            candidates.append((round(val), round(val)))
+    if candidates:
+        return min(c[0] for c in candidates), max(c[1] for c in candidates)
+    return None
+
+
 def annual_salary(job):
     """Return (min_annual, max_annual, currency, was_posted)."""
     lo = job.get("job_min_salary")
@@ -432,6 +515,11 @@ def normalize(job, bucket, theme=None):
     lo, hi, cur, posted = annual_salary(job)
     title = job.get("job_title") or ""
     desc = (job.get("job_description") or "").strip()
+    source = "employer" if posted else None
+    if not posted:
+        found = find_salary_in_text(desc)
+        if found:
+            lo, hi, cur, source = found[0], found[1], "USD", "text"
     return {
         "id": job.get("job_id"),
         "source": "jsearch",
@@ -448,6 +536,7 @@ def normalize(job, bucket, theme=None):
         "salary_max": hi,
         "salary_currency": cur,
         "salary_posted": posted,
+        "salary_source": source,
         "posted_at": job.get("job_posted_at_datetime_utc"),
         "apply_link": (job.get("job_apply_link")
                        or (job.get("apply_options") or [{}])[0].get("apply_link")),
@@ -500,7 +589,7 @@ def keep(job):
         return False, "excluded title"
     if COMPANY_EXCLUDE_RE.search(job.get("company") or ""):
         return False, "trade or property employer"
-    if job["salary_posted"]:
+    if job.get("salary_source"):
         top = job["salary_max"] or job["salary_min"] or 0
         if (job["salary_currency"] or "USD").upper() != "USD":
             return False, "not USD"
@@ -508,7 +597,7 @@ def keep(job):
             return False, "below $215k"
         return True, "salary meets floor"
     if job["senior"]:
-        return True, "no salary posted, senior title"
+        return True, "no salary found, senior title"
     return False, "no pay, title not senior"
 
 # ---------------------------------------------------------------- run
@@ -656,7 +745,7 @@ def refilter(store):
             reason = "excluded title"
         elif COMPANY_EXCLUDE_RE.search(job.get("company") or ""):
             reason = "trade or property employer"
-        elif job.get("salary_posted"):
+        elif job.get("salary_source"):
             top = job.get("salary_max") or job.get("salary_min") or 0
             if (job.get("salary_currency") or "USD").upper() != "USD":
                 reason = "not USD"
