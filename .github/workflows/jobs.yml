@@ -2,20 +2,17 @@ name: Job search
 
 on:
   schedule:
-    # GitHub's scheduler delays and sometimes silently drops cron firings, so
-    # this asks several times a day rather than once. agent.py runs the search
-    # only if today's run is still outstanding and it is past 9:15am in New
-    # York, so the FIRST firing GitHub actually delivers does the work and every
-    # later one exits in seconds without spending an API call. Minutes are off
-    # the hour on purpose - the top of the hour is the most congested and the
-    # most likely to be dropped.
-    # Times are UTC; both daylight saving (UTC-4) and standard (UTC-5) covered.
-    - cron: '17 13 * * *'   #  9:17am EDT  /  8:17am EST (EST: too early, skips)
-    - cron: '47 13 * * *'   #  9:47am EDT  /  8:47am EST (EST: too early, skips)
-    - cron: '17 14 * * *'   # 10:17am EDT  /  9:17am EST
-    - cron: '47 14 * * *'   # 10:47am EDT  /  9:47am EST
-    - cron: '17 16 * * *'   # 12:17pm EDT  / 11:17am EST  - midday catch-up
-    - cron: '17 20 * * *'   #  4:17pm EDT  /  3:17pm EST  - late catch-up
+    # GitHub's scheduler is unreliable on this repo: firings arrive over an hour
+    # late or never arrive at all. Rather than guess which times it will honour,
+    # ask every hour and let the script decide. agent.py runs the search only if
+    # today's run is still outstanding and it is past 9:15am in New York, so:
+    #   - the first firing GitHub actually delivers does the work
+    #   - every other firing exits in about ten seconds, spending no API calls
+    #   - a late run still happens, which beats no run
+    # This repo is public, so Actions minutes are unmetered and the idle firings
+    # are free. Minute :17 avoids the congested top of the hour.
+    - cron: '17 * * * *'          # every hour, on the hour + 17 minutes
+    - cron: '47 13,14,15 * * *'   # extra tries through the ET morning
   workflow_dispatch:
     inputs:
       include_jsearch:
