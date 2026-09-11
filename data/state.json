@@ -1,8 +1,8 @@
 {
   "adzuna_requests": {
-    "2026-09": 120
+    "2026-09": 132
   },
-  "last_run_date": "2026-09-10",
+  "last_run_date": "2026-09-11",
   "quota": {
     "checked_at": "2026-09-07T16:29:38+00:00",
     "limit": 200,
@@ -316,6 +316,34 @@
         "no pay, title not senior": 45,
         "older than 25 hours": 24,
         "wrong title": 261
+      },
+      "searches": 12,
+      "sources": [
+        "Adzuna"
+      ],
+      "themes": [
+        "product manager",
+        "program manager",
+        "project manager",
+        "transformation lead",
+        "chief of staff",
+        "AI enablement"
+      ]
+    },
+    {
+      "added": 14,
+      "at": "2026-09-11T14:26:42+00:00",
+      "kept": 39,
+      "per_source": {
+        "adzuna": 39
+      },
+      "raw": 428,
+      "rejected": {
+        "below $215k": 12,
+        "excluded title": 18,
+        "no pay, title not senior": 66,
+        "older than 25 hours": 48,
+        "wrong title": 245
       },
       "searches": 12,
       "sources": [
